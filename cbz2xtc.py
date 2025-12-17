@@ -1,0 +1,432 @@
+#!/usr/bin/env python3
+"""
+cbz2xtc - Convert CBZ manga files to XTC format for XTEink X4
+All-in-one tool: CBZ extraction → PNG optimization → XTC conversion
+
+Usage:
+    cbz2xtc                    # Process current directory
+    cbz2xtc /path/to/folder    # Process specific folder
+    cbz2xtc --clean            # Process and clean up intermediate files
+    cbz2xtc --dither           # Apply dithering for better grayscale→B&W conversion
+"""
+
+import os
+import sys
+import zipfile
+import shutil
+import subprocess
+from pathlib import Path
+from PIL import Image
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+
+
+# Configuration
+TARGET_WIDTH = 480
+TARGET_HEIGHT = 800
+
+# Global flag for dithering (default True)
+USE_DITHERING = True
+
+
+def find_png2xtc():
+    """
+    Find png2xtc.py in common locations
+    Returns path if found, None otherwise
+    """
+    possible_paths = [
+        # Check environment variable first
+        Path(os.environ.get('PNG2XTC_PATH', '')),
+        # Same directory as this script
+        Path(__file__).parent / "png2xtc.py",
+        # epub2xtc subfolder
+        Path(__file__).parent / "epub2xtc" / "png2xtc.py",
+        # Parent directory
+        Path(__file__).parent.parent / "png2xtc.py",
+        # Parent epub2xtc folder
+        Path(__file__).parent.parent / "epub2xtc" / "png2xtc.py",
+        # Windows common location
+        Path(r"H:\commandline_tools\epub2xtc\png2xtc.py"),
+        # Linux/Mac common locations
+        Path.home() / ".local" / "bin" / "png2xtc.py",
+        Path("/usr/local/bin/png2xtc.py"),
+    ]
+    
+    for path in possible_paths:
+        if path.exists():
+            return path
+    
+    return None
+
+
+def optimize_image(img_data, output_path_base, page_num):
+    """
+    Optimize image for XTEink X4:
+    - Split image in half horizontally
+    - Rotate each half 90° clockwise
+    - Resize to fit 480x800 with white padding
+    - Convert to grayscale
+    - Save as PNG (for XTC conversion)
+    """
+    try:
+        from io import BytesIO
+        img = Image.open(BytesIO(img_data))
+        
+        # Convert to grayscale
+        if img.mode != 'L':
+            img = img.convert('L')
+        
+        width, height = img.size
+        half_height = height // 2
+        
+        total_size = 0
+        
+        # Process top half
+        top_half = img.crop((0, 0, width, half_height))
+        top_rotated = top_half.rotate(-90, expand=True)
+        output_top = output_path_base.parent / f"{page_num:04d}_a.png"
+        size = save_with_padding(top_rotated, output_top)
+        total_size += size
+        
+        # Process bottom half
+        bottom_half = img.crop((0, half_height, width, height))
+        bottom_rotated = bottom_half.rotate(-90, expand=True)
+        output_bottom = output_path_base.parent / f"{page_num:04d}_b.png"
+        size = save_with_padding(bottom_rotated, output_bottom)
+        total_size += size
+        
+        return total_size
+        
+    except Exception as e:
+        print(f"    Warning: Could not optimize image: {e}")
+        return 0
+
+
+def save_with_padding(img, output_path):
+    """
+    Resize image to fit within 480x800 and add white padding
+    Optionally apply dithering for better B&W conversion
+    """
+    img_width, img_height = img.size
+    scale = min(TARGET_WIDTH / img_width, TARGET_HEIGHT / img_height)
+    
+    new_width = int(img_width * scale)
+    new_height = int(img_height * scale)
+    
+    img_resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    
+    # Apply dithering if enabled (for better grayscale → B&W conversion)
+    if USE_DITHERING:
+        # Convert to 1-bit with Floyd-Steinberg dithering
+        img_resized = img_resized.convert('1', dither=Image.Dither.FLOYDSTEINBERG)
+        # Convert back to grayscale mode so we can paste on white background
+        img_resized = img_resized.convert('L')
+    
+    # Create WHITE background
+    result = Image.new('L', (TARGET_WIDTH, TARGET_HEIGHT), color=255)
+    
+    # Center the image
+    x = (TARGET_WIDTH - new_width) // 2
+    y = (TARGET_HEIGHT - new_height) // 2
+    
+    result.paste(img_resized, (x, y))
+    result.save(output_path, 'PNG', optimize=True)
+    
+    return output_path.stat().st_size
+
+
+def extract_cbz_to_png(cbz_path, temp_dir):
+    """
+    Extract CBZ and convert to optimized PNGs
+    Returns the folder path with PNGs or None if failed
+    """
+    cbz_name = cbz_path.stem
+    output_folder = temp_dir / cbz_name
+    output_folder.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        with zipfile.ZipFile(cbz_path, 'r') as zip_ref:
+            file_list = zip_ref.namelist()
+            image_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
+            image_files = [f for f in file_list if f.lower().endswith(image_extensions)]
+            image_files.sort()
+            
+            if not image_files:
+                print(f"  ✗ No images found in {cbz_name}")
+                return None
+            
+            print(f"  Extracting {len(image_files)} pages...", end=" ", flush=True)
+            
+            for idx, img_file in enumerate(image_files, 1):
+                img_data = zip_ref.read(img_file)
+                output_base = output_folder / f"{idx:04d}"
+                optimize_image(img_data, output_base, idx)
+            
+            print(f"✓")
+            return output_folder
+            
+    except Exception as e:
+        print(f"  ✗ Error: {e}")
+        return None
+
+
+def convert_png_folder_to_xtc(png_folder, output_file):
+    """
+    Convert folder of PNGs to XTC using png2xtc.py
+    """
+    png2xtc_path = find_png2xtc()
+    
+    if not png2xtc_path:
+        print(f"  ✗ Error: png2xtc.py not found")
+        print(f"     Please install epub2xtc or set PNG2XTC_PATH environment variable")
+        return False
+    
+    try:
+        result = subprocess.run(
+            ["python", str(png2xtc_path), str(png_folder), str(output_file)],
+            capture_output=True,
+            text=True,
+            timeout=300  # 5 minute timeout
+        )
+        
+        if result.returncode == 0 and output_file.exists():
+            size_mb = output_file.stat().st_size / 1024 / 1024
+            print(f"  ✓ Created {output_file.name} ({size_mb:.1f}MB)")
+            return True
+        else:
+            print(f"  ✗ Conversion failed: {result.stderr}")
+            return False
+            
+    except subprocess.TimeoutExpired:
+        print(f"  ✗ Conversion timed out")
+        return False
+    except Exception as e:
+        print(f"  ✗ Error: {e}")
+        return False
+
+
+def process_cbz_file(cbz_path, output_dir, temp_dir, clean_temp, file_num=None, total_files=None):
+    """
+    Full pipeline: CBZ → PNG → XTC
+    """
+    progress_prefix = f"[{file_num}/{total_files}] " if file_num and total_files else ""
+    print(f"\n{progress_prefix}Processing: {cbz_path.name}")
+    
+    start_time = time.time()
+    
+    # Step 1: Extract and optimize to PNG
+    png_folder = extract_cbz_to_png(cbz_path, temp_dir)
+    if not png_folder:
+        return False, cbz_path.name, 0
+    
+    # Step 2: Convert to XTC
+    output_file = output_dir / f"{cbz_path.stem}.xtc"
+    success = convert_png_folder_to_xtc(png_folder, output_file)
+    
+    # Step 3: Clean up temp files if requested
+    if clean_temp and png_folder.exists():
+        shutil.rmtree(png_folder)
+    
+    elapsed = time.time() - start_time
+    return success, cbz_path.name, elapsed
+
+
+def main():
+    print("=" * 60)
+    print("CBZ to XTC Converter for XTEink X4")
+    print("=" * 60)
+    
+    # Check for help flag
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print("\nConverts CBZ manga files to XTC format optimized for XTEink X4")
+        print("\nUsage:")
+        print("  cbz2xtc                           # Process current directory")
+        print("  cbz2xtc /path/to/folder           # Process specific folder")
+        print("  cbz2xtc --no-dither               # Disable dithering")
+        print("  cbz2xtc --clean                   # Auto-delete temp PNG files")
+        print("  cbz2xtc --no-dither --clean       # Combine options")
+        print("\nOptions:")
+        print("  --no-dither   Disable Floyd-Steinberg dithering. By default,")
+        print("                dithering is ENABLED for better grayscale to")
+        print("                black & white conversion. Use this flag for pure")
+        print("                threshold conversion (sharper for clean line art).")
+        print("\n  --clean       Automatically delete temporary PNG files after")
+        print("                conversion. Saves disk space.")
+        print("\n  --help, -h    Show this help message")
+        print("\nWhat it does:")
+        print("  1. Extracts images from CBZ files")
+        print("  2. Splits each page in half and rotates 90°")
+        print("  3. Resizes to 480×800 with white padding")
+        print("  4. Converts to grayscale PNG (with dithering by default)")
+        print("  5. Converts PNG to XTC format (fast loading!)")
+        print("  6. Uses multithreading (up to 4 parallel conversions)")
+        print("\nOutput:")
+        print("  - XTC files saved to: ./xtc_output/")
+        print("  - Temp PNGs saved to: ./.temp_png/ (unless --clean)")
+        print("\nExamples:")
+        print("  cbz2xtc                           # Basic conversion (with dithering)")
+        print("  cbz2xtc --clean                   # With cleanup")
+        print("  cbz2xtc --no-dither               # Without dithering")
+        print("  cbz2xtc D:\\manga --clean          # Specific folder + cleanup")
+        return 0
+    
+    # Parse arguments
+    global USE_DITHERING
+    clean_temp = "--clean" in sys.argv
+    USE_DITHERING = "--no-dither" not in sys.argv  # Inverted logic
+    args = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
+    
+    # Get input directory
+    if args:
+        input_dir = Path(args[0])
+    else:
+        input_dir = Path.cwd()
+    
+    if not input_dir.exists():
+        print(f"Error: Directory '{input_dir}' does not exist")
+        return 1
+    
+    print(f"\nInput directory: {input_dir.absolute()}")
+    if USE_DITHERING:
+        print("Dithering: ENABLED (better for screentones/gradients)")
+    else:
+        print("Dithering: DISABLED (use --dither to enable)")
+    
+    # Determine number of threads
+    max_workers = min(4, os.cpu_count() or 1)  # Use up to 4 threads
+    print(f"Threads: {max_workers} (parallel processing)")
+    
+    # Create output and temp directories
+    output_dir = input_dir / "xtc_output"
+    temp_dir = input_dir / ".temp_png"
+    
+    output_dir.mkdir(exist_ok=True)
+    temp_dir.mkdir(exist_ok=True)
+    
+    # Find all CBZ files (including in subdirectories)
+    cbz_files = []
+    
+    # Check current directory
+    cbz_files.extend(sorted(input_dir.glob("*.cbz")))
+    cbz_files.extend(sorted(input_dir.glob("*.CBZ")))
+    
+    # Only check subdirectories if no CBZ files found in current directory
+    if not cbz_files:
+        for subdir in input_dir.iterdir():
+            if subdir.is_dir() and subdir.name not in ["xtc_output", ".temp_png"]:
+                cbz_files.extend(sorted(subdir.glob("*.cbz")))
+                cbz_files.extend(sorted(subdir.glob("*.CBZ")))
+    
+    # Remove any duplicates (shouldn't happen now, but just in case)
+    cbz_files = list(dict.fromkeys(cbz_files))
+    
+    if not cbz_files:
+        print(f"\nNo CBZ files found in '{input_dir}' or its subdirectories")
+        return 1
+    
+    print(f"\nFound {len(cbz_files)} CBZ file(s)")
+    print(f"Output directory: {output_dir.absolute()}")
+    print(f"Temp directory: {temp_dir.absolute()}")
+    if clean_temp:
+        print("Clean mode: Temporary files will be deleted after conversion")
+    print("-" * 60)
+    
+    # Verify png2xtc.py exists
+    png2xtc_path = find_png2xtc()
+    if not png2xtc_path:
+        print(f"\n✗ Error: png2xtc.py not found")
+        print(f"\nThe epub2xtc library is required to convert PNG to XTC format.")
+        print(f"Repository: https://github.com/jonasdiemer/epub2xtc")
+        
+        # Ask user if they want to clone it
+        try:
+            response = input("\nWould you like to clone epub2xtc now? (Y/n): ").strip().lower()
+            
+            if response in ['y', 'yes', '']:
+                # Determine where to clone
+                clone_dir = Path(__file__).parent / "epub2xtc"
+                
+                print(f"\nCloning to: {clone_dir}")
+                print("Running: git clone https://github.com/jonasdiemer/epub2xtc.git")
+                
+                result = subprocess.run(
+                    ["git", "clone", "https://github.com/jonasdiemer/epub2xtc.git", str(clone_dir)],
+                    capture_output=True,
+                    text=True
+                )
+                
+                if result.returncode == 0:
+                    print("✓ Successfully cloned epub2xtc!")
+                    print("\nPlease run cbz2xtc again.")
+                    return 0
+                else:
+                    print(f"✗ Failed to clone: {result.stderr}")
+                    print("\nPlease clone manually:")
+                    print("  git clone https://github.com/jonasdiemer/epub2xtc.git")
+                    return 1
+            else:
+                print("\nPlease install epub2xtc manually:")
+                print("  git clone https://github.com/jonasdiemer/epub2xtc.git")
+                print("\nOr set PNG2XTC_PATH environment variable to the location of png2xtc.py")
+                return 1
+                
+        except KeyboardInterrupt:
+            print("\n\nCancelled by user.")
+            return 1
+        except Exception as e:
+            print(f"\nError: {e}")
+            print("\nPlease install epub2xtc manually:")
+            print("  git clone https://github.com/jonasdiemer/epub2xtc.git")
+            return 1
+    
+    print(f"Using png2xtc.py from: {png2xtc_path.parent}")
+    
+    # Process files with multithreading
+    start_time = time.time()
+    success_count = 0
+    total_time = 0
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_cbz = {
+            executor.submit(process_cbz_file, cbz_file, output_dir, temp_dir, clean_temp, idx, len(cbz_files)): cbz_file
+            for idx, cbz_file in enumerate(cbz_files, 1)
+        }
+        
+        # Process results as they complete
+        for future in as_completed(future_to_cbz):
+            success, filename, elapsed = future.result()
+            if success:
+                success_count += 1
+                total_time += elapsed
+                avg_time = total_time / success_count
+                remaining = (len(cbz_files) - success_count) * avg_time
+                print(f"  ⏱  {elapsed:.1f}s | Est. remaining: {remaining/60:.1f}min")
+    
+    elapsed_total = time.time() - start_time
+    
+    print("-" * 60)
+    print(f"\nCompleted! Successfully converted {success_count}/{len(cbz_files)} files")
+    print(f"Total time: {elapsed_total/60:.1f} minutes")
+    print(f"Average: {elapsed_total/len(cbz_files):.1f}s per file")
+    print(f"\nXTC files are in: {output_dir.absolute()}")
+    
+    # Clean up temp directory if empty or if clean mode
+    if clean_temp:
+        try:
+            if temp_dir.exists():
+                shutil.rmtree(temp_dir)
+                print("Temporary files cleaned up")
+        except:
+            pass
+    else:
+        print(f"Temporary PNG files are in: {temp_dir.absolute()}")
+        print("(Run with --clean flag to auto-delete temp files)")
+    
+    print("\nTransfer the .xtc files to your XTEink X4!")
+    
+    return 0 if success_count == len(cbz_files) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
