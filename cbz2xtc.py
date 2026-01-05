@@ -157,20 +157,37 @@ def optimize_image(img_data, output_path_base, page_num, suffix=""):
                 # print("skipping page:",page_num)
             return 0
 
+        need_boost = CONTRAST_BOOST
+        contrast_black = 0
+        contrast_white = 0
+        if CONTRAST_VALUE and len(CONTRAST_VALUE.split(',')) > 1:
+            contrast_black = int(CONTRAST_VALUE.split(',')[0])
+            contrast_white = int(CONTRAST_VALUE.split(',')[1])
+        elif CONTRAST_VALUE:
+            contrast_black = int(CONTRAST_VALUE)
+            contrast_white = int(CONTRAST_VALUE)
+        else:
+            contrast_black = 0
+            contrast_white = 0
+        if SPECIAL_CONTRASTS and page_num in SPECIAL_CONTRAST_PAGES:
+            need_boost = True
+            special_contrast_pos = SPECIAL_CONTRAST_PAGES.index(page_num)
+            contrast_black = SPECIAL_CONTRAST_DARKS[special_contrast_pos]
+            contrast_white = SPECIAL_CONTRAST_LIGHTS[special_contrast_pos]
         #enhance contrast
-        if CONTRAST_BOOST:
-            if CONTRAST_VALUE == "0":
+        if need_boost:
+            if contrast_black == 0 and contrast_white == 0:
                 pass  # we don't need to adjust contrast at all.
-            elif len(CONTRAST_VALUE.split(',')) > 1:
+            elif contrast_black != contrast_white:
                 #passed a list of 2, first is dark cutoff, second is bright cutoff.
-                black_cutoff = 3 * int(CONTRAST_VALUE.split(',')[0])
-                white_cutoff = 3 + 9 * int(CONTRAST_VALUE.split(',')[1])
+                black_cutoff = 3 * contrast_black
+                white_cutoff = 3 + 9 * contrast_white
                 uncropped_img = ImageOps.autocontrast(uncropped_img, cutoff=(black_cutoff,white_cutoff), preserve_tone=True)
-            elif int(CONTRAST_VALUE) < 0 or int(CONTRAST_VALUE) > 8:
+            elif int(contrast_black) < 0 or int(contrast_black) > 8:
                 pass # value out of range. we'll treat like 0.
             else:
-                black_cutoff = 3 * int(CONTRAST_VALUE)
-                white_cutoff = 3 + 9 * int(CONTRAST_VALUE)
+                black_cutoff = 3 * contrast_black
+                white_cutoff = 3 + 9 * contrast_white
                 uncropped_img = ImageOps.autocontrast(uncropped_img, cutoff=(black_cutoff,white_cutoff), preserve_tone=True)
         else:
             # nothing set, so we go with the default value of 4. 
@@ -249,7 +266,7 @@ def optimize_image(img_data, output_path_base, page_num, suffix=""):
                     output_page = output_path_base.parent / f"{page_num:04d}{suffix}_0_overview.png"
                     save_with_padding(page_view, output_page, padcolor=PADDING_COLOR)
 
-            if OVERLAP or DESIRED_V_OVERLAP_SEGMENTS or SET_H_OVERLAP_SEGMENTS:
+            if OVERLAP or DESIRED_V_OVERLAP_SEGMENTS or SET_H_OVERLAP_SEGMENTS or page_num in SPECIAL_SPLITS_PAGES:
                 # DESIRED_V_OVERLAP_SEGMENTS = 3
                 # SET_H_OVERLAP_SEGMENTS = 1
                 # MINIMUM_V_OVERLAP_PERCENT = 5
@@ -257,7 +274,12 @@ def optimize_image(img_data, output_path_base, page_num, suffix=""):
                 # MAX_SPLIT_WIDTH = 80
 
                 number_of_h_segments = SET_H_OVERLAP_SEGMENTS
-                total_calculated_width = MAX_SPLIT_WIDTH * number_of_h_segments - int((number_of_h_segments - 1) * (MAX_SPLIT_WIDTH * 0.01 * SET_H_OVERLAP_PERCENT))
+                h_overlap_percent = SET_H_OVERLAP_PERCENT
+                if SPECIAL_SPLITS and page_num in SPECIAL_SPLIT_PAGES:
+                    special_split_pos = SPECIAL_SPLIT_PAGES.index(page_num)
+                    number_of_h_segments = SPECIAL_SPLIT_HSPLITS[special_split_pos]
+                    h_overlap_percent = SPECIAL_SPLIT_HOVERLAP[special_split_pos]
+                total_calculated_width = MAX_SPLIT_WIDTH * number_of_h_segments - int((number_of_h_segments - 1) * (MAX_SPLIT_WIDTH * 0.01 * h_overlap_percent))
                     # so, 1 = 800. 2 with 33% overlap = 1334, 3 with 33% overlap = 1868px, etc.
                 established_scale = total_calculated_width * 1.0 / width
                     # so for 2000px wide source, 1= 0.4, 2=0.667, etc. 
@@ -267,7 +289,12 @@ def optimize_image(img_data, output_path_base, page_num, suffix=""):
                 if number_of_h_segments > 1:
                     shiftover_to_overlap = overlapping_width - (overlapping_width * number_of_h_segments - width) // (number_of_h_segments - 1)
 
-                number_of_v_segments = DESIRED_V_OVERLAP_SEGMENTS - 1 
+                number_of_v_segments = DESIRED_V_OVERLAP_SEGMENTS - 1
+                minimum_v_overlap = MINIMUM_V_OVERLAP_PERCENT
+                if SPECIAL_SPLITS and page_num in SPECIAL_SPLIT_PAGES:
+                    special_split_pos = SPECIAL_SPLIT_PAGES.index(page_num)
+                    number_of_v_segments = SPECIAL_SPLIT_VSPLITS[special_split_pos]-1
+                    minimum_v_overlap = -100
                 letter_keys = ["a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z"]
                 letter_keys_hsplit = ["a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z"]
                 if IS_MANGA:
@@ -276,7 +303,7 @@ def optimize_image(img_data, output_path_base, page_num, suffix=""):
                 # width_proportion = width / 800
                 overlapping_height = 480 / established_scale // 1
                 shiftdown_to_overlap = 99999
-                while number_of_v_segments < 26 and (shiftdown_to_overlap * 1.0 / overlapping_height) > (1.0 - .01 * MINIMUM_V_OVERLAP_PERCENT):
+                while number_of_v_segments < 26 and (shiftdown_to_overlap * 1.0 / overlapping_height) > (1.0 - .01 * minimum_v_overlap):
                     # iterate until we have a number of segments that cover the page with sufficient overlap.
                     # the first iteration should fix the 99999 thing and set up our "base" attempt.
                     number_of_v_segments += 1
@@ -292,6 +319,11 @@ def optimize_image(img_data, output_path_base, page_num, suffix=""):
 
                 # Make overlapping segments that fill 800x480 screen.
                 v = 0
+                use_segment_list = []
+                if SPECIAL_SPLITS and page_num in SPECIAL_SPLIT_PAGES:
+                    special_split_pos = SPECIAL_SPLIT_PAGES.index(page_num)
+                    use_segment_list = SPECIAL_SPLIT_BOOLEANS[special_split_pos]
+                    print("special split for page:",SPECIAL_SPLIT_PAGES[special_split_pos]," segment list:",use_segment_list)
                 while v < number_of_v_segments:
                     h = 0
                     while h < number_of_h_segments:
@@ -312,11 +344,16 @@ def optimize_image(img_data, output_path_base, page_num, suffix=""):
                                 thumb_region_bottom = int(THUMBNAIL_WIDTH-(shiftover_to_overlap*(number_of_h_segments-h-1))*thumbnail_scale)
                                 draw_thumb_overlay.rectangle((thumb_region_left,thumb_region_top,thumb_region_right,thumb_region_bottom), fill=(255,highlight_opacity), outline=(PADDING_COLOR,255), width=3)
                                 img_temp_thumbnail = Image.alpha_composite(img_thumbnail, thumbnail_overlay).convert("L")
-                                size = save_with_padding(segment_rotated, output, padcolor=PADDING_COLOR, thumbnail=img_temp_thumbnail)    
+                                if len(use_segment_list)==0 or use_segment_list[0]=="1":
+                                    size = save_with_padding(segment_rotated, output, padcolor=PADDING_COLOR, thumbnail=img_temp_thumbnail)    
                             else:
-                                size = save_with_padding(segment_rotated, output, padcolor=PADDING_COLOR, thumbnail=img_thumbnail)
+                                if len(use_segment_list)==0 or use_segment_list[0]=="1":
+                                    size = save_with_padding(segment_rotated, output, padcolor=PADDING_COLOR, thumbnail=img_thumbnail)
                         else:
-                            size = save_with_padding(segment_rotated, output, padcolor=PADDING_COLOR)
+                            if len(use_segment_list)==0 or use_segment_list[0]=="1":
+                                size = save_with_padding(segment_rotated, output, padcolor=PADDING_COLOR)
+                        if len(use_segment_list)>0:
+                            use_segment_list.pop(0)
                         h += 1
                     v += 1
 
@@ -661,7 +698,17 @@ def main():
         print("                spread of contrast and margin samples for a page or")
         print("                list of pages. Useful for evaluating what settings")
         print("                you want to use. Does contrasts 0-8, margin 0-10 percent")
-        print("\n  --clean       Automatically delete temporary PNG files after")
+        print("\n  --special-split <specifier> or <specifier,specifier,specifier...> ")
+        print("                (Advanced) specifier = pagenum-hsplit-vsplit-booleans-hoverlap,")
+        print("                where hoverlap is horizontal overlap to use, and")
+        print("                booleans is a list of 1 and 0s representing whether each")
+        print("                segment is included in output or not. Ex: 121-2-4-01010111-50")
+        print("                Booleans and hoverlap are optional.")
+        print("\n  --special-contrast <specifier> or <specifier,specifier,specifier...> ")
+        print("                (Advanced) specifier = pagenum-darkcontrast-lightcontrast,")
+        print("                indicating alternate contrast settings for each specified")
+        print("                page. Ex: 121-5-2")
+        print("\n  --clean      Automatically delete temporary PNG files after")
         print("                conversion. Saves disk space and prevents leftover")
         print("                files from interfering with conversions using different")
         print("                split or overview settings.")
@@ -730,6 +777,16 @@ def main():
     global IS_MANGA
     global SAMPLE_SET
     global SAMPLE_PAGES
+    global SPECIAL_SPLITS
+    global SPECIAL_SPLIT_PAGES
+    global SPECIAL_SPLIT_HSPLITS
+    global SPECIAL_SPLIT_VSPLITS
+    global SPECIAL_SPLIT_BOOLEANS
+    global SPECIAL_SPLIT_HOVERLAP
+    global SPECIAL_CONTRASTS
+    global SPECIAL_CONTRAST_PAGES
+    global SPECIAL_CONTRAST_DARKS
+    global SPECIAL_CONTRAST_LIGHTS
     global PADDING_COLOR
 
 
@@ -748,6 +805,8 @@ def main():
     SIDEWAYS_OVERVIEWS = "--sideways-overviews" in sys.argv
     SELECT_OVERVIEWS = "--select-overviews" in sys.argv
     IS_MANGA = "--manga" in sys.argv
+    SPECIAL_SPLITS = "--special-split" in sys.argv
+    SPECIAL_CONTRASTS = "--special-contrast" in sys.argv
     THUMBNAIL_WIDTH = 0
     START_PAGE = False
     STOP_PAGE = False
@@ -766,6 +825,15 @@ def main():
     MINIMUM_V_OVERLAP_PERCENT = 5
     SET_H_OVERLAP_PERCENT = 70
     MAX_SPLIT_WIDTH = 800
+    CONTRAST_VALUE = False
+    SPECIAL_SPLIT_PAGES = []
+    SPECIAL_SPLIT_HSPLITS = []
+    SPECIAL_SPLIT_VSPLITS = []
+    SPECIAL_SPLIT_BOOLEANS = []
+    SPECIAL_SPLIT_HOVERLAP = []
+    SPECIAL_CONTRAST_PAGES = []
+    SPECIAL_CONTRAST_DARKS = []
+    SPECIAL_CONTRAST_LIGHTS = []
     PADDING_COLOR = 255
 
     if "--pad-black" in sys.argv:
@@ -845,6 +913,31 @@ def main():
         elif arg == "--sample-set":
             SAMPLE_PAGES = sys.argv[i+1].split(',')
             print("Sample Mode for pages:", SAMPLE_PAGES)
+            i += 1 #skip next arg
+        elif arg == "--special-split":
+            specifiers = sys.argv[i+1].split(',')
+            for specifier in specifiers:
+                SPECIAL_SPLIT_PAGES.append(int(specifier.split('-')[0]))
+                SPECIAL_SPLIT_HSPLITS.append(int(specifier.split('-')[1]))
+                SPECIAL_SPLIT_VSPLITS.append(int(specifier.split('-')[2]))
+                if len(specifier.split('-'))>3:
+                    SPECIAL_SPLIT_BOOLEANS.append(list(specifier.split('-')[3]))
+                else:
+                    SPECIAL_SPLIT_BOOLEANS.append('');
+                if len(specifier.split('-'))>4:
+                    SPECIAL_SPLIT_HOVERLAP.append(int(specifier.split('-')[4]))
+                else:
+                    SPECIAL_SPLIT_HOVERLAP.append(SET_H_OVERLAP_PERCENT)
+            print("special-split specifier pages:", SPECIAL_SPLIT_PAGES)
+            print("special-split specifier booleans:", SPECIAL_SPLIT_BOOLEANS)
+            i += 1 #skip next arg
+        elif arg == "--special-contrast":
+            specifiers = sys.argv[i+1].split(',')
+            for specifier in specifiers:
+                SPECIAL_CONTRAST_PAGES.append(int(specifier.split('-')[0]))
+                SPECIAL_CONTRAST_DARKS.append(int(specifier.split('-')[1]))
+                SPECIAL_CONTRAST_LIGHTS.append(int(specifier.split('-')[2]))
+            print("special-contrast specifier pages:", SPECIAL_CONTRAST_PAGES)
             i += 1 #skip next arg
         elif arg.startswith("--"):
             pass # do nothing, it's presumably boolean and handled above.
