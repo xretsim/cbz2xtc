@@ -10,6 +10,7 @@ Usage:
     cbz2xtc --dither           # Apply dithering for better grayscale→B&W conversion
 """
 
+
 import os
 import sys
 import zipfile
@@ -20,6 +21,12 @@ from PIL import Image, ImageOps, ImageDraw, ImageFont
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
+global GUIMODE
+GUIMODE = "--gui" in sys.argv
+if GUIMODE:
+    import tkinter as tk  # Beginning of GUI work
+    from PIL import ImageTk
+    import platform
 
 # Configuration
 TARGET_WIDTH = 480
@@ -27,6 +34,7 @@ TARGET_HEIGHT = 800
 
 # Global flag for dithering (default True)
 USE_DITHERING = True
+
 
 
 def find_png2xtc():
@@ -59,6 +67,15 @@ def find_png2xtc():
     
     return None
 
+def gui_preview_image(img_data, output_path_base, page_num):
+    try:
+        from io import BytesIO
+        uncropped_img = Image.open(BytesIO(img_data))
+        output_page = output_path_base.parent / f"{page_num:04d}_preview.png"
+        save_gui_thumbs(uncropped_img, output_page)
+    except Exception as e:
+        print(f"    Warning: Could not optimize image: {e}")
+        return 0
 
 def optimize_image(img_data, output_path_base, page_num, suffix=""):
     """
@@ -76,20 +93,20 @@ def optimize_image(img_data, output_path_base, page_num, suffix=""):
         uncropped_img = Image.open(BytesIO(img_data))
 
         if IS_MANGA:
-            if suffix == ".1":
+            if suffix == "_1":
                 #right half of a spread first because manga
                 width, height = uncropped_img.size
                 uncropped_img = uncropped_img.crop((int(50/100.0*width), int(0/100.0*height), width-int(0/100.0*width), height-int(0/100.0*height)))
-            if suffix == ".2":
+            if suffix == "_2":
                 #left half of a spread next because manga
                 width, height = uncropped_img.size
                 uncropped_img = uncropped_img.crop((int(0/100.0*width), int(0/100.0*height), width-int(50/100.0*width), height-int(0/100.0*height)))
         else:
-            if suffix == ".1":
+            if suffix == "_1":
                 #left half of a spread
                 width, height = uncropped_img.size
                 uncropped_img = uncropped_img.crop((int(0/100.0*width), int(0/100.0*height), width-int(50/100.0*width), height-int(0/100.0*height)))
-            if suffix == ".2":
+            if suffix == "_2":
                 #right half of a spread
                 width, height = uncropped_img.size
                 uncropped_img = uncropped_img.crop((int(50/100.0*width), int(0/100.0*height), width-int(0/100.0*width), height-int(0/100.0*height)))
@@ -446,8 +463,8 @@ def optimize_image(img_data, output_path_base, page_num, suffix=""):
             output_page = output_path_base.parent / f"{page_num:04d}{suffix}_0_spread.png"
             size = save_with_padding(page_rotated, output_page, padcolor=PADDING_COLOR)
             if SPLIT_SPREADS and (SPLIT_SPREADS_PAGES[0] == "all" or str(page_num) in SPLIT_SPREADS_PAGES):
-                splitLeft = optimize_image(img_data, output_path_base, page_num, suffix=suffix+".1")
-                splitRight = optimize_image(img_data, output_path_base, page_num, suffix=suffix+".2")
+                splitLeft = optimize_image(img_data, output_path_base, page_num, suffix=suffix+"_1")
+                splitRight = optimize_image(img_data, output_path_base, page_num, suffix=suffix+"_2")
             total_size += size
         else: 
             # This is a dont-split page, treat like overview page
@@ -510,8 +527,23 @@ def save_with_padding(img, output_path, *, padcolor=255, thumbnail=False):
     
     return output_path.stat().st_size
 
+def save_gui_thumbs(img, output_path):
+    """
+    Resize image to fit within 400x400
+    """
+    img_width, img_height = img.size
+    scale = min(400 / img_width, 400 / img_height)
+    
+    new_width = int(img_width * scale)
+    new_height = int(img_height * scale)
+    
+    img_resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    
+    img_resized.save(output_path, 'PNG', optimize=True)
 
-def extract_cbz_to_png(cbz_path, temp_dir):
+    return output_path.stat().st_size
+
+def extract_cbz_to_png(cbz_path, temp_dir, gui_thumbnails=False):
     """
     Extract CBZ and convert to optimized PNGs
     Returns the folder path with PNGs or None if failed
@@ -537,7 +569,10 @@ def extract_cbz_to_png(cbz_path, temp_dir):
             for idx, img_file in enumerate(image_files, 1):
                 img_data = zip_ref.read(img_file)
                 output_base = output_folder / f"{idx:04d}"
-                optimize_image(img_data, output_base, idx)
+                if gui_thumbnails:
+                    gui_preview_image(img_data, output_base, idx)
+                else:
+                    optimize_image(img_data, output_base, idx)
             
             print(f"✓")
             return output_folder
@@ -561,9 +596,9 @@ def convert_png_folder_to_xtc(png_folder, output_file):
     try:
         # print("trying path:",str(png2xtc_path))
         result = subprocess.run(
-            ["python", str(png2xtc_path), str(png_folder), str(output_file)],
+            # ["python", str(png2xtc_path), str(png_folder), str(output_file)],
             # I had to use the following instead to make this work on my Mac.
-            # ["python3", str(png2xtc_path) + "/png2xtc.py", str(png_folder), str(output_file)],
+            ["python3", str(png2xtc_path) + "/png2xtc.py", str(png_folder), str(output_file)],
             capture_output=True,
             text=True,
             timeout=300  # 5 minute timeout
@@ -789,7 +824,6 @@ def main():
     global SPECIAL_CONTRAST_LIGHTS
     global PADDING_COLOR
 
-
     clean_temp = "--clean" in sys.argv
     USE_DITHERING = "--no-dither" not in sys.argv  # Inverted logic
     OVERLAP = "--overlap" in sys.argv
@@ -838,6 +872,253 @@ def main():
 
     if "--pad-black" in sys.argv:
         PADDING_COLOR = 0
+
+    if GUIMODE:
+        class PageMetadata:
+            # A class attribute (shared by all instances)
+            skipTK = None  #tk.IntVar(value=0)
+            dont_splitTK = None  # tk.IntVar(value=0)
+            image_reference = None
+            overlay_reference = None
+            canvas_reference = None
+            width = -1
+            height = -1
+
+            def __init__(self, page_index):
+                # Instance attributes (unique to each object)
+                self.page_index = page_index
+                self.page_num = page_index + 1
+
+        class ScrollableImageFrame(tk.Frame):
+            def __init__(self, master, image_paths, *args, **kwargs):
+                tk.Frame.__init__(self, master, *args, **kwargs)
+                self.image_paths = image_paths
+                self.page_metadata = []
+                # self.image_references = [] # Keep references to avoid garbage collection
+                # self.overlay_references = [] # Keep references to avoid garbage collection
+                # self.pagecanvas_references = [] # Keep references to avoid garbage collection
+                # self.image_size_references = [] 
+
+                # 1. Create a Canvas and a Scrollbar
+                self.canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
+                self.scrollbar = tk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+                self.scrollable_frame = tk.Frame(self.canvas)
+
+                # 2. Configure the canvas and scrollbar
+                self.scrollable_frame.bind(
+                    "<Configure>",
+                    lambda e: self.canvas.configure(
+                        scrollregion=self.canvas.bbox("all")
+                    )
+                )
+                self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+                self.canvas.configure(yscrollcommand=self.scrollbar.set)
+
+                # 3. Pack the canvas and scrollbar
+                self.canvas.pack(side="left", fill="both", expand=True)
+                self.scrollbar.pack(side="right", fill="y")
+
+                # Bind mouse wheel scrolling
+                self.canvas.bind("<MouseWheel>", self.on_mousewheel)
+                if platform.system() == 'Linux':
+                    self.canvas.bind("<Button-4>", self.on_mousewheel)
+                    self.canvas.bind("<Button-5>", self.on_mousewheel)
+
+                # 4. Load and display images
+                self.load_images()
+
+            def on_mousewheel(event):
+                # Respond to wheel event
+                # Windows/macOS use event.delta; Linux uses event.num
+                print("Scrollies!")
+                if platform.system() == 'Linux':
+                    if event.num == 4:
+                        self.canvas.yview_scroll(-1, "units")
+                    elif event.num == 5:
+                        self.canvas.yview_scroll(1, "units")
+                elif platform.system() == 'Windows':
+                    # Windows: event.delta is a multiple of 120
+                    print("Win scrollies!")
+                    self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+                else:
+                    # Mac: event.delta is as-is
+                    print("Mac scrollies!")
+                    self.canvas.yview_scroll(int(-1 * (event.delta)), "units")
+
+            # def on_mousewheel(self, event):
+            #     self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
+            def load_images(self):
+
+                def skip_clicked(page_index):
+                    # print(SKIP_ARRAY)
+                    metadata_obj = self.page_metadata[page_index]
+                    # current_states = [var.get() for var in SKIP_ARRAY]
+                    print(f"Page {metadata_obj.page_num} skip is now {metadata_obj.skipTK.get()}")
+                    replace_canvas = metadata_obj.pagecanvas_reference
+                    replace_img = metadata_obj.image_reference
+                    replace_canvas.create_image(0, 0, image=replace_img, anchor='nw')
+                    if metadata_obj.skipTK.get():
+                        print("dimming image")
+                        replace_overlay_img = Image.new('RGBA', (metadata_obj.width, metadata_obj.height), color=(50, 50, 50, 220))
+                        # draw = ImageDraw.Draw(replace_overlay_img)
+                        # draw.rectangle((0,0,width,height), fill=(0,0,0,200))
+                        newPhoto = ImageTk.PhotoImage(replace_overlay_img)
+                        metadata_obj.overlay_reference = newPhoto
+                        replace_canvas.create_image(0, 0, image=newPhoto, anchor='nw')
+
+                def dontsplit_clicked(page_index):
+                    # print(DONTSPLIT_ARRAY)
+                    metadata_obj = self.page_metadata[page_index]
+                    # current_states = [var.get() for var in DONTSPLIT_ARRAY]
+                    # page = pageIntVar.get()
+                    # print(f"Current states: {current_states}")
+                    print(f"Page {metadata_obj.page_num} dontclick is now {metadata_obj.dont_splitTK.get()}")
+                    replace_canvas = metadata_obj.pagecanvas_reference
+                    replace_img = metadata_obj.image_reference
+                    replace_canvas.create_image(0, 0, image=replace_img, anchor='nw')
+                    if not metadata_obj.dont_splitTK.get():
+                        print("redrawing margins")
+                        replace_overlay_img = metadata_obj.overlay_reference
+                        replace_canvas.create_image(0, 0, image=replace_overlay_img, anchor='nw')
+
+                for i, path in enumerate(self.image_paths):
+                    try:
+                        # Open and resize image (optional, recommended for many images)
+                        img = Image.open(path)
+                        # img = img.resize((150, 150), Image.Resampling.LANCZOS)
+                        photo = ImageTk.PhotoImage(img)
+                        self.page_metadata.append(PageMetadata(i))
+                        metadata_Obj = self.page_metadata[i];
+                        metadata_Obj.image_reference = photo
+                        # Store reference
+                        width, height = img.size
+                        metadata_Obj.width = width
+                        metadata_Obj.height = height
+                        # self.image_size_references.append(img.size)
+
+                        # Create overlay images to draw splits and crops on.
+                        overlay_img = Image.new('RGBA', (width, height), color=(0, 0, 0, 0))
+                        draw = ImageDraw.Draw(overlay_img)
+                        draw.rectangle((20,20,width-20,height-20), outline=(0,0,255,128), width=2)
+                        over_photo = ImageTk.PhotoImage(overlay_img)
+                        metadata_Obj.overlay_reference = over_photo # Store reference
+                        
+                        pageimage_canvas = tk.Canvas(self.scrollable_frame, width=width, height=height)
+                        pageimage_canvas.grid(row=i // 3, column=(i % 3)*2, padx=10, pady=5) # 3 double columns grid layout
+                        # pageimage_frame.pack_propagate(False)
+                        metadata_Obj.pagecanvas_reference = pageimage_canvas # Store reference
+
+                        # Put the image in the canvas
+                        pageimage_canvas.create_image(0, 0, image=photo, anchor='nw')
+                        pageimage_canvas.create_image(0, 0, image=over_photo, anchor='nw')
+                        # Create a Label to display the image
+                        # imagelabel = tk.Label(pageimage_frame, image=photo)
+                        # label.grid(row=i // 3, column=i % 3, padx=5, pady=5) # 3 columns grid layout
+                        # imagelabel.grid(row=i // 3, column=(i % 3)*2, padx=10, pady=5) # 3 double columns grid layout
+                        # imagelabel.place(x=0,y=0)
+                        # overlaylabel = tk.Label(pageimage_frame, image=over_photo)
+                        # overlaylabel.grid(row=i // 3, column=(i % 3)*2, padx=10, pady=5) # 3 double columns grid layout
+                        # overlaylabel.place(x=50,y=50)
+
+                        control_frame = tk.Frame(self.scrollable_frame)
+                        control_frame.grid(row=i // 3, column=(i % 3) * 2 + 1, padx=10, pady=5)
+                        control_title = tk.Label(control_frame, text=f"page {i+1}")
+                        control_title.pack(anchor="w")
+                        metadata_Obj.skipTK = tk.IntVar(value=0)
+                        checkbox = tk.Checkbutton(control_frame, 
+                          text="Skip", 
+                          variable=metadata_Obj.skipTK,  # Link the variable to the checkbox
+                          command=lambda currenti=i: skip_clicked(currenti))     # Call a function when clicked
+                        checkbox.pack(anchor="w")
+                        metadata_Obj.dont_splitTK = tk.IntVar(value=0)
+                        checkbox2 = tk.Checkbutton(control_frame, 
+                          text="Don't Split", 
+                          variable=metadata_Obj.dont_splitTK,  # Link the variable to the checkbox
+                          command=lambda currenti=i: dontsplit_clicked(currenti))     # Call a function when clicked
+                        checkbox2.pack(anchor="w")
+                    except FileNotFoundError:
+                        print(f"Error: Image not found at {path}")
+                    except Exception as e:
+                        print(f"An error occurred with image {path}: {e}")
+
+        root = tk.Tk()
+        root.title("Scrollable Image List")
+        root.geometry("1280x800")
+
+        # Create dummy image files for testing
+        # if not os.path.exists("gui_images"):
+        #     os.makedirs("gui_images")
+        #     # Create some placeholder images (requires Pillow)
+        #     for i in range(15):
+        #         img = Image.new('RGB', (150, 150), color = (i*10, 100, 150))
+        #         img.save(f"gui_images/image_{i+1}.png")
+
+        # Get list of image file paths
+        MARGIN_VALUE = "0"
+        STOP_PAGE = 6
+        USE_DITHERING = False
+        print("sys.argv[1]",sys.argv[1])
+        input_dir = Path(sys.argv[1])
+        temp_dir = input_dir / "gui_temp_png"
+        # Find all CBZ files (including in subdirectories)
+        cbz_files = []
+        
+        # Check current directory
+        cbz_files.extend(sorted(input_dir.glob("*.cbz")))
+        cbz_files.extend(sorted(input_dir.glob("*.CBZ")))
+        cbz_path = cbz_files[0]
+        temp_png_path = extract_cbz_to_png(cbz_path, temp_dir, gui_thumbnails=True)
+        STOP_PAGE = False
+
+        global STRING_ARGS
+        STRING_ARGS = " ".join(sys.argv)
+
+        def on_closing():
+            global STRING_ARGS
+            STRING_ARGS = options_box.get("1.0", "end-1c")
+            # print("string_args now:", STRING_ARGS)
+            root.destroy()
+
+        root.protocol("WM_DELETE_WINDOW", on_closing)
+
+        def on_button_click():
+            """This function runs when the button is clicked."""
+            print("Button was clicked! This code runs inside the event loop.")
+            # You can interact with other widgets here, e.g., update a label.
+            label.config(text=STRING_ARGS)
+
+        top_control_frame = tk.Frame(root)
+        top_control_frame.pack(side=tk.TOP, fill=tk.X)
+        options_box = tk.Text(top_control_frame, height=10, width=50, font=("Courier", 14, "normal")) 
+        options_box.insert("1.0", STRING_ARGS)
+        options_box.pack(side=tk.LEFT, fill=tk.X, expand=True, pady=10, padx=10)
+
+        label = tk.Label(top_control_frame, text="Hello, Tkinter!")
+        label.pack()
+
+        # The 'command' attribute links the button click event to the on_button_click function
+        button = tk.Button(top_control_frame, text="Start", command=on_button_click)
+        button.pack()
+
+        # print("temp dir:",temp_png_path)
+        # print("os.listdir(temp_dir):",os.listdir(temp_png_path))
+        image_files = [os.path.join(temp_png_path, f) for f in os.listdir(temp_png_path) if f.endswith('.png')]
+        # print("image_files:",image_files)
+        image_files.sort()
+        scroll_frame = ScrollableImageFrame(root, image_files)
+        scroll_frame.pack(side=tk.TOP, fill="both", expand=True)
+
+        bottom_control_frame = tk.Frame(root)
+        bottom_control_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        bot_label = tk.Label(bottom_control_frame, text="GUI work by Glenn Loos-Austin")
+        bot_label.pack()
+
+        root.mainloop()
+
+        print("string_args now:", STRING_ARGS)
+
+        sys.argv = STRING_ARGS.split(" ")
 
     # args = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
     
