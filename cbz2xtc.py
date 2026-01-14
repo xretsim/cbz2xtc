@@ -69,10 +69,12 @@ def find_png2xtc():
 
 def gui_preview_image(img_data, output_path_base, page_num):
     try:
-        from io import BytesIO
-        uncropped_img = Image.open(BytesIO(img_data))
-        output_page = output_path_base.parent / f"{page_num:04d}_preview.png"
-        save_gui_thumbs(uncropped_img, output_page)
+        a=Path(output_path_base.parent / f"{page_num:04d}_preview.png")
+        if not a.exists():
+            from io import BytesIO
+            uncropped_img = Image.open(BytesIO(img_data))
+            output_page = output_path_base.parent / f"{page_num:04d}_preview.png"
+            save_gui_thumbs(uncropped_img, output_page)
     except Exception as e:
         print(f"    Warning: Could not optimize image: {e}")
         return 0
@@ -873,12 +875,267 @@ def main():
     if "--pad-black" in sys.argv:
         PADDING_COLOR = 0
 
-    if GUIMODE:
+    #GUI Globals
+    global SCROLL_FRAME_REF
+    SCROLL_FRAME_REF = None
+    global GUI_COLUMNS
+    # global GUI_PAGE
+    global GUI_PAGE_LIMIT
+
+    GUI_COLUMNS = 3
+    # GUI_PAGE = 0
+    GUI_PAGE_LIMIT = 72  #with three columns, this is 24 rows. 
+
+    if GUIMODE: 
+        def refresh_page_canvas(page_index, what_changed, scroll_frame_ref):
+            # what changed options:
+            # "initial" - canvas initial creation
+            # "pagination" - redraw due to page change.
+            # "skip" - toggle whether page is skipped
+            # "dontsplit" - toggle whether page is exempt from splitting.
+            # "selectoverviews" - togger whether page gets a preview before its splits.
+            # "margin"
+            # "marginrefresh"
+            # "commandline"
+            metadata_obj = scroll_frame_ref.page_metadata[page_index]
+            if page_index < 3 or (not what_changed == "initial" and not what_changed == "marginrefresh" and not what_changed == "pagination"):
+                print(f"State of {what_changed} modified for page {metadata_obj.page_num} display.")
+            replace_canvas = metadata_obj.canvas_reference
+            replace_img = metadata_obj.photo_reference
+            if replace_canvas:
+                if False:
+                    # This will be a "show with approximate contrast" setting.
+                    dither_img = metadata_obj.image_reference.convert('1', dither=Image.Dither.FLOYDSTEINBERG)
+                    replace_img = ImageTk.PhotoImage(dither_img)
+                    metadata_obj.photo_reference = replace_img  # No going back for now.
+                replace_canvas.delete("all")
+                replace_canvas.create_image(0, 0, image=replace_img, anchor='nw') # restore or init canvas to unaltered base image.
+                # so long as it's not None, which which would mean it's currently undisplayed due to pagination.
+            width = metadata_obj.width
+            height = metadata_obj.height
+            # skip display
+            if metadata_obj.skipTK.get():
+                # this image is a skip, so let's grey it out and quit.
+                if replace_canvas:
+                    # so long as it's not None, which which would mean it's currently undisplayed due to pagination.
+                    replace_overlay_img = Image.new('RGBA', (width, height), color=(50, 50, 50, 220))
+                    newPhoto = ImageTk.PhotoImage(replace_overlay_img)
+                    metadata_obj.overlay_reference = newPhoto
+                    replace_canvas.create_image(0, 0, image=newPhoto, anchor='nw')
+                return True
+            if replace_canvas:
+                # so long as it's not None, which which would mean it's currently undisplayed due to pagination.
+                overlay_img = Image.new('RGBA', (width, height), color=(0, 0, 0, 0))
+                # margin display
+                if True and not metadata_obj.dont_splitTK.get(): 
+                    # margins are active and we're splitting this page, so they should be shown.
+                    draw = ImageDraw.Draw(overlay_img)
+                    # draw.rectangle((20,20,width-20,height-20), outline=(0,0,255,128), width=2)
+                    top = int(height * float(margin_top.get()) / 100.0)
+                    bottom = height - int(height * float(margin_bottom.get()) / 100.0)
+                    left = int(width * float(margin_left.get()) / 100.0)
+                    right = width - int(width * float(margin_right.get()) / 100.0)
+                    # draw.rectangle((left,top,right,bottom), outline=(0,0,255,128), width=2)
+                    draw.rectangle((0,0,left,height), fill=(50, 50, 50, 220))
+                    draw.rectangle((0,0,width,top), fill=(50, 50, 50, 220))
+                    draw.rectangle((right,0,width,height), fill=(50, 50, 50, 220))
+                    draw.rectangle((0,bottom,width,height), fill=(50, 50, 50, 220))
+                    # draw.rectangle((left,top,right,bottom), outline=(0,0,255,128), width=2)
+                # Put our new overlay in place.
+                over_photo = ImageTk.PhotoImage(overlay_img)
+                metadata_obj.overlay_reference = over_photo # Store reference
+                replace_canvas.create_image(0, 0, image=over_photo, anchor='nw')
+
+        def modify_list_in_option(starting_string, number_to_mod, add_it):
+            string_to_mod = str(number_to_mod)
+            param_name = starting_string.split(' ')[0]
+            page_list = starting_string.split(' ')[1].split(',')
+            if add_it:
+                if not string_to_mod in page_list:
+                    page_list.append(string_to_mod)
+            else:
+                if string_to_mod in page_list:
+                    page_list.remove(string_to_mod)
+            if len(page_list) > 0:
+                page_list.sort(key=int)
+                return param_name + " " + ",".join(page_list)
+            else:
+                return ""
+
+        def refresh_options(page_index, what_changed, scroll_frame_ref):
+            metadata_obj = None
+            if page_index > -1:
+                # this is page-related.
+                metadata_obj = scroll_frame_ref.page_metadata[page_index]
+            if page_index < 3 or (not what_changed == "initial" and not what_changed == "marginrefresh"):
+                if metadata_obj:
+                    print(f"Updating {what_changed} options for page {metadata_obj.page_num}.")
+                else:
+                    print(f"Updating {what_changed} global option.")
+            start_value = options_box.get("1.0","end-1c")
+            split_values = start_value.split(" --")
+            find_index = 0
+            found_it = False
+            for val in split_values:
+                if what_changed == "skip" and split_values[find_index].startswith("skip "):
+                    found_it = True
+                    new_bool=metadata_obj.skipTK.get()
+                    split_values[find_index] = modify_list_in_option(split_values[find_index], metadata_obj.page_num, new_bool)
+                if what_changed == "dontsplit" and split_values[find_index].startswith("dont-split "):
+                    found_it = True
+                    new_bool=metadata_obj.dont_splitTK.get()
+                    split_values[find_index] = modify_list_in_option(split_values[find_index], metadata_obj.page_num, new_bool)
+                if what_changed == "selectoverviews" and split_values[find_index].startswith("select-overviews "):
+                    found_it = True
+                    new_bool=metadata_obj.select_overviewsTK.get()
+                    split_values[find_index] = modify_list_in_option(split_values[find_index], metadata_obj.page_num, new_bool)
+                if what_changed == "splitspreads" and split_values[find_index].startswith("split-spreads "):
+                    found_it = True
+                    new_bool=metadata_obj.split_spreadsTK.get()
+                    split_values[find_index] = modify_list_in_option(split_values[find_index], metadata_obj.page_num, new_bool)
+                if what_changed == "overlap" and split_values[find_index] == "overlap":
+                    found_it = True
+                    split_values[find_index] = ""
+                if what_changed == "overviews" and split_values[find_index] == "include-overviews":
+                    found_it = True
+                    split_values[find_index] = ""
+                if what_changed == "sideways" and split_values[find_index] == "sideways-overviews":
+                    found_it = True
+                    split_values[find_index] = ""
+                if what_changed == "manga" and split_values[find_index] == "manga":
+                    found_it = True
+                    split_values[find_index] = ""
+                if what_changed == "padblack" and split_values[find_index] == "pad-black":
+                    found_it = True
+                    split_values[find_index] = ""
+                find_index += 1
+            if found_it:
+                # is it now blank? remove emptys from list.
+                split_values[:] = [x for x in split_values if x]
+            else:
+                # we didn't find it, need to add it afresh.
+                if what_changed == "skip" and metadata_obj.skipTK.get():
+                    split_values.append("skip " + str(metadata_obj.page_num))
+                if what_changed == "dontsplit" and metadata_obj.dont_splitTK.get():
+                    split_values.append("dont-split " + str(metadata_obj.page_num))
+                if what_changed == "selectoverviews" and metadata_obj.select_overviewsTK.get():
+                    split_values.append("select-overviews " + str(metadata_obj.page_num))
+                if what_changed == "splitspreads" and metadata_obj.split_spreadsTK.get():
+                    split_values.append("split-spreads " + str(metadata_obj.page_num))
+                if what_changed == "overlap" and scroll_frame_ref.g_overlapTK.get():
+                    split_values.append("overlap")
+                if what_changed == "overviews" and scroll_frame_ref.g_overviewsTK.get():
+                    split_values.append("include-overviews")
+                if what_changed == "sideways" and scroll_frame_ref.g_sidewaysTK.get():
+                    split_values.append("sideways-overviews")
+                if what_changed == "manga" and scroll_frame_ref.g_mangaTK.get():
+                    split_values.append("manga")
+                if what_changed == "padblack" and scroll_frame_ref.g_padBlackTK.get():
+                    split_values.append("pad-black")
+            new_value = " --".join(split_values)
+            options_box.delete("1.0", tk.END)
+            options_box.insert("1.0", new_value)
+
+        def parse_options(scroll_frame_ref):
+            current_options = options_box.get("1.0","end-1c")
+            split_values = current_options.split(" --")
+            split_previous = scroll_frame_ref.previous_options.split(" --")
+            update_overlay_list = []
+            for val in split_values:
+                if not val in split_previous:
+                    # this parameter has changed!
+                    if val.startswith("skip "):
+                        page_list = val.split(' ')[1].split(',')
+                        # print("skips changed",page_list)
+                        for meta_obj in scroll_frame_ref.page_metadata:
+                            # print(meta_obj.page_num,(meta_obj.skipTK.get() == 1),(str(meta_obj.page_num) in page_list))
+                            if (meta_obj.skipTK.get() == 1) != (str(meta_obj.page_num) in page_list):
+                                # There's a mismatch between checkbox and list.
+                                meta_obj.skipTK.set(str(meta_obj.page_num) in page_list) #set checkbox
+                                update_overlay_list.append(meta_obj.page_index) #mark it for visual update.
+                    if val.startswith("dont-split "):
+                        page_list = val.split(' ')[1].split(',')
+                        # print("dont-split changed",page_list)
+                        for meta_obj in scroll_frame_ref.page_metadata:
+                            # print(meta_obj.page_num,(meta_obj.dont_splitTK.get() == 1),(str(meta_obj.page_num) in page_list))
+                            if (meta_obj.dont_splitTK.get() == 1) != (str(meta_obj.page_num) in page_list):
+                                # There's a mismatch between checkbox and list.
+                                meta_obj.dont_splitTK.set(str(meta_obj.page_num) in page_list) #set checkbox
+                                update_overlay_list.append(meta_obj.page_index) #mark it for visual update.
+                    if val.startswith("select-overviews "):
+                        page_list = val.split(' ')[1].split(',')
+                        # print("select-overviews changed",page_list)
+                        for meta_obj in scroll_frame_ref.page_metadata:
+                            # print(meta_obj.page_num,(meta_obj.select_overviewsTK.get() == 1),(str(meta_obj.page_num) in page_list))
+                            if (meta_obj.select_overviewsTK.get() == 1) != (str(meta_obj.page_num) in page_list):
+                                # There's a mismatch between checkbox and list.
+                                meta_obj.select_overviewsTK.set(str(meta_obj.page_num) in page_list) #set checkbox
+                                update_overlay_list.append(meta_obj.page_index) #mark it for visual update.
+                    if val.startswith("split-spreads "):
+                        page_list = val.split(' ')[1].split(',')
+                        # print("select-overviews changed",page_list)
+                        for meta_obj in scroll_frame_ref.page_metadata:
+                            # print(meta_obj.page_num,(meta_obj.select_overviewsTK.get() == 1),(str(meta_obj.page_num) in page_list))
+                            if (meta_obj.split_spreadsTK.get() == 1) != (str(meta_obj.page_num) in page_list):
+                                # There's a mismatch between checkbox and list.
+                                meta_obj.split_spreadsTK.set(str(meta_obj.page_num) in page_list) #set checkbox
+                                update_overlay_list.append(meta_obj.page_index) #mark it for visual update.
+                    if val.startswith("margin ") or val.startswith("margins "):
+                        margin_list = val.split(' ')[1].split(',')
+                        # print("margins changed",margin_list)
+                        if len(margin_list) == 1 and margin_list[0] == "0":
+                            margin_left.set("")
+                            margin_top.set("")
+                            margin_right.set("")
+                            margin_bottom.set("")
+                        if len(margin_list) == 1 and margin_list[0] == "auto":
+                            margin_left.set("auto")
+                            margin_top.set("auto")
+                            margin_right.set("auto")
+                            margin_bottom.set("auto")
+                        elif len(margin_list) == 1:
+                            margin_left.set(margin_list[0])
+                            margin_top.set(margin_list[0])
+                            margin_right.set(margin_list[0])
+                            margin_bottom.set(margin_list[0])
+                        else:
+                            margin_list.append("0")
+                            margin_list.append("0")
+                            margin_left.set(margin_list[0])
+                            margin_top.set(margin_list[1])
+                            margin_right.set(margin_list[2])
+                            margin_bottom.set(margin_list[3])
+                        for metadata_obj in scroll_frame_ref.page_metadata:
+                            # print(metadata_obj.page_num)
+                            refresh_page_canvas(metadata_obj.page_index, "marginrefresh", scroll_frame_ref)
+
+            scroll_frame_ref.g_overlapTK.set(value="overlap" in split_values)
+            scroll_frame_ref.g_overviewsTK.set(value="include-overviews" in split_values)
+            scroll_frame_ref.g_sidewaysTK.set(value="sideways-overviews" in split_values)
+            scroll_frame_ref.g_mangaTK.set(value="manga" in split_values)
+            scroll_frame_ref.g_padBlackTK.set(value="pad-black" in split_values)
+
+            if len(update_overlay_list) > 0:
+                for index_to_update in update_overlay_list:
+                    refresh_page_canvas(index_to_update, "commandline", scroll_frame_ref)
+            scroll_frame_ref.previous_options = current_options
+
+        def on_key_release(event):
+            # Callback function that runs on every key release.
+            # The event object has a .widget attribute that refers to the triggering widget
+            # current_text = event.widget.get("1.0","end-1c")
+            # print("Text field content:", current_text)
+            parse_options(SCROLL_FRAME_REF)
+            # You can add your function logic here
+
         class PageMetadata:
             # A class attribute (shared by all instances)
             skipTK = None  #tk.IntVar(value=0)
             dont_splitTK = None  # tk.IntVar(value=0)
+            select_overviewsTK = None #tk.IntVar(value=0)
+            split_spreadsTK = None #tk.IntVar(value=0)
             image_reference = None
+            photo_reference = None #a TK Photo wrapper. 
             overlay_reference = None
             canvas_reference = None
             width = -1
@@ -889,15 +1146,33 @@ def main():
                 self.page_index = page_index
                 self.page_num = page_index + 1
 
+        class CanvasDisplayControls:
+            # A class attribute (shared by all instances)
+            titleTKlabel = None # A label
+            skipTKcb = None  # A checkbutton
+            dont_splitTKcb = None  # A checkbutton
+            select_overviewsTKcb = None  # A checkbutton
+            split_spreadsTKcb = None  # A checkbutton
+            canvas_reference = None  # A page display canvas
+
+            def __init__(self, canvas_index):
+                # Instance attributes (unique to each object)
+                self.canvas_index = canvas_index
+
         class ScrollableImageFrame(tk.Frame):
             def __init__(self, master, image_paths, *args, **kwargs):
                 tk.Frame.__init__(self, master, *args, **kwargs)
                 self.image_paths = image_paths
                 self.page_metadata = []
-                # self.image_references = [] # Keep references to avoid garbage collection
-                # self.overlay_references = [] # Keep references to avoid garbage collection
-                # self.pagecanvas_references = [] # Keep references to avoid garbage collection
-                # self.image_size_references = [] 
+                self.canvas_display_and_controls = []
+                self.previous_options = ""
+                # print("init TK variables")
+                self.g_overlapTK = None # tk.IntVar(value=0)
+                self.g_overviewsTK = None # tk.IntVar(value=0)
+                self.g_sidewaysTK = None # tk.IntVar(value=0)
+                self.g_mangaTK = None # tk.IntVar(value=0)
+                self.g_padBlackTK = None # tk.IntVar(value=0)
+                # print(self.g_overlapTK.get())
 
                 # 1. Create a Canvas and a Scrollbar
                 self.canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
@@ -926,6 +1201,9 @@ def main():
 
                 # 4. Load and display images
                 self.load_images()
+                print("images loaded")
+                # print("g_overlapTK:",self.g_overlapTK.get())
+                parse_options(self)
 
             def on_mousewheel(event):
                 # Respond to wheel event
@@ -948,95 +1226,179 @@ def main():
             # def on_mousewheel(self, event):
             #     self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
 
+            def skip_clicked(self, page_index):
+                refresh_page_canvas(page_index, "skip", self)
+                refresh_options(page_index, "skip", self)
+
+            def dontsplit_clicked(self, page_index):
+                refresh_page_canvas(page_index, "dontsplit", self)
+                refresh_options(page_index, "dontsplit", self)
+
+            def selectoverviews_clicked(self, page_index):
+                # refresh_page_canvas(page_index, "selectoverviews", self)  // not needed because no change.
+                refresh_options(page_index, "selectoverviews", self)
+
+            def splitspreads_clicked(self, page_index):
+                # refresh_page_canvas(page_index, "splitspreads", self)  // not needed because no change.
+                refresh_options(page_index, "splitspreads", self)
+
             def load_images(self):
+                global GUI_PAGE_LIMIT
 
-                def skip_clicked(page_index):
-                    # print(SKIP_ARRAY)
-                    metadata_obj = self.page_metadata[page_index]
-                    # current_states = [var.get() for var in SKIP_ARRAY]
-                    print(f"Page {metadata_obj.page_num} skip is now {metadata_obj.skipTK.get()}")
-                    replace_canvas = metadata_obj.pagecanvas_reference
-                    replace_img = metadata_obj.image_reference
-                    replace_canvas.create_image(0, 0, image=replace_img, anchor='nw')
-                    if metadata_obj.skipTK.get():
-                        print("dimming image")
-                        replace_overlay_img = Image.new('RGBA', (metadata_obj.width, metadata_obj.height), color=(50, 50, 50, 220))
-                        # draw = ImageDraw.Draw(replace_overlay_img)
-                        # draw.rectangle((0,0,width,height), fill=(0,0,0,200))
-                        newPhoto = ImageTk.PhotoImage(replace_overlay_img)
-                        metadata_obj.overlay_reference = newPhoto
-                        replace_canvas.create_image(0, 0, image=newPhoto, anchor='nw')
+                def overlap_clicked():
+                    print("overlap clicked")
+                    refresh_options(-1, "overlap", self)
 
-                def dontsplit_clicked(page_index):
-                    # print(DONTSPLIT_ARRAY)
-                    metadata_obj = self.page_metadata[page_index]
-                    # current_states = [var.get() for var in DONTSPLIT_ARRAY]
-                    # page = pageIntVar.get()
-                    # print(f"Current states: {current_states}")
-                    print(f"Page {metadata_obj.page_num} dontclick is now {metadata_obj.dont_splitTK.get()}")
-                    replace_canvas = metadata_obj.pagecanvas_reference
-                    replace_img = metadata_obj.image_reference
-                    replace_canvas.create_image(0, 0, image=replace_img, anchor='nw')
-                    if not metadata_obj.dont_splitTK.get():
-                        print("redrawing margins")
-                        replace_overlay_img = metadata_obj.overlay_reference
-                        replace_canvas.create_image(0, 0, image=replace_overlay_img, anchor='nw')
+                def overviews_clicked():
+                    print("overviews clicked")
+                    refresh_options(-1, "overviews", self)
+
+                def sideways_clicked():
+                    print("sideways clicked")
+                    refresh_options(-1, "sideways", self)
+
+                def manga_clicked():
+                    print("maga clicked")
+                    refresh_options(-1, "manga", self)
+
+                def padblack_clicked():
+                    print("padblack clicked")
+                    refresh_options(-1, "padblack", self)
+
+                scroll_frame = self.scrollable_frame
+               
+                top_scroll_controls_frame1 = tk.Frame(scroll_frame)
+                top_scroll_controls_frame1.grid(row=0,column=0,columnspan=GUI_COLUMNS*2,pady=0)
+
+                overall_label = tk.Label(top_scroll_controls_frame1, text="Overall Processing Options:")
+                overall_label.pack(side=tk.LEFT, anchor="w")
+
+                top_scroll_controls_frame2 = tk.Frame(scroll_frame)
+                top_scroll_controls_frame2.grid(row=1,column=0,columnspan=GUI_COLUMNS*2,pady=0)
+
+                self.g_overlapTK = tk.IntVar(value=0)
+                # print("overlap confirm",self.g_overlapTK.get())
+                checkbox_g1 = tk.Checkbutton(top_scroll_controls_frame2, 
+                    text="Overlap segments",
+                    variable=self.g_overlapTK,  # Link the variable to the checkbox
+                    command=overlap_clicked)     # Call a function when clicked
+                checkbox_g1.pack(side=tk.LEFT, anchor="w")
+                self.g_overviewsTK = tk.IntVar(value=0)
+                checkbox_g2 = tk.Checkbutton(top_scroll_controls_frame2, 
+                    text="Use preceding overviews",
+                    variable=self.g_overviewsTK,  # Link the variable to the checkbox
+                    command=overviews_clicked)     # Call a function when clicked
+                checkbox_g2.pack(side=tk.LEFT, anchor="w")
+                self.g_sidewaysTK = tk.IntVar(value=0)
+                checkbox_g3 = tk.Checkbutton(top_scroll_controls_frame2, 
+                    text="Sideways overviews",
+                    variable=self.g_sidewaysTK,  # Link the variable to the checkbox
+                    command=sideways_clicked)     # Call a function when clicked
+                checkbox_g3.pack(side=tk.LEFT, anchor="w")
+                self.g_mangaTK = tk.IntVar(value=0)
+                checkbox_g4 = tk.Checkbutton(top_scroll_controls_frame2, 
+                    text="Manga (R to L)",
+                    variable=self.g_mangaTK,  # Link the variable to the checkbox
+                    command=manga_clicked)     # Call a function when clicked
+                checkbox_g4.pack(side=tk.LEFT, anchor="w")
+                self.g_padBlackTK = tk.IntVar(value=0)
+                checkbox_g5 = tk.Checkbutton(top_scroll_controls_frame2, 
+                    text="Pad with black",
+                    variable=self.g_padBlackTK,  # Link the variable to the checkbox
+                    command=padblack_clicked)     # Call a function when clicked
+                checkbox_g5.pack(side=tk.LEFT, anchor="w")
+
+                top_scroll_controls_frame3 = tk.Frame(scroll_frame)
+                top_scroll_controls_frame3.grid(row=2,column=0,columnspan=GUI_COLUMNS*2,pady=0)
+
+                spacer_label = tk.Label(top_scroll_controls_frame3, text=" ")
+                spacer_label.pack(side=tk.LEFT, anchor="w")
+
+                if len(self.image_paths) < 100:
+                    #let's increase the gui page limit a bit to avoid having pagination with just a few on page 2.
+                    GUI_PAGE_LIMIT = 99
 
                 for i, path in enumerate(self.image_paths):
                     try:
                         # Open and resize image (optional, recommended for many images)
                         img = Image.open(path)
-                        # img = img.resize((150, 150), Image.Resampling.LANCZOS)
+                        width, height = img.size
+                        # img = img.resize((width*2//3, height*2//3), Image.Resampling.LANCZOS)
+                        # width, height = img.size
+                        # img = img.convert('1', dither=Image.Dither.FLOYDSTEINBERG)
+                        # img = img.convert('L')
                         photo = ImageTk.PhotoImage(img)
                         self.page_metadata.append(PageMetadata(i))
-                        metadata_Obj = self.page_metadata[i];
-                        metadata_Obj.image_reference = photo
+                        metadata_obj = self.page_metadata[i];
                         # Store reference
-                        width, height = img.size
-                        metadata_Obj.width = width
-                        metadata_Obj.height = height
-                        # self.image_size_references.append(img.size)
+                        metadata_obj.image_reference = img
+                        metadata_obj.photo_reference = photo
+                        # Store size properties
+                        metadata_obj.width = width
+                        metadata_obj.height = height
 
-                        # Create overlay images to draw splits and crops on.
-                        overlay_img = Image.new('RGBA', (width, height), color=(0, 0, 0, 0))
-                        draw = ImageDraw.Draw(overlay_img)
-                        draw.rectangle((20,20,width-20,height-20), outline=(0,0,255,128), width=2)
-                        over_photo = ImageTk.PhotoImage(overlay_img)
-                        metadata_Obj.overlay_reference = over_photo # Store reference
-                        
-                        pageimage_canvas = tk.Canvas(self.scrollable_frame, width=width, height=height)
-                        pageimage_canvas.grid(row=i // 3, column=(i % 3)*2, padx=10, pady=5) # 3 double columns grid layout
-                        # pageimage_frame.pack_propagate(False)
-                        metadata_Obj.pagecanvas_reference = pageimage_canvas # Store reference
+                        if i < GUI_PAGE_LIMIT:
+                            self.canvas_display_and_controls.append(CanvasDisplayControls(i))
+                            canv_controls_obj = self.canvas_display_and_controls[i]
+                            # Create canvas to draw base image and overlay image (with splits and crops) in.
+                            pageimage_canvas = tk.Canvas(self.scrollable_frame, width=width, height=height)
+                            pageimage_canvas.grid(row=i // GUI_COLUMNS + 3, column=(i % GUI_COLUMNS)*2, padx=5, pady=5, sticky=tk.E) # 3 double columns grid layout
+                            metadata_obj.canvas_reference = pageimage_canvas # Store reference for one in use.
+                            canv_controls_obj.canvas_reference = pageimage_canvas # Store reference for reuse in pagination.
+                            # Add the controls and init the associated variables.
+                            # set up the surrounding frame
+                            control_frame = tk.Frame(self.scrollable_frame)
+                            control_frame.grid(row=i // GUI_COLUMNS + 3, column=(i % GUI_COLUMNS) * 2 + 1, padx=5, pady=5)
+                            # put a title at the top.
+                            control_title = tk.Label(control_frame, text=f"page {i+1}")
+                            control_title.pack(anchor="w")
+                            canv_controls_obj.titleTKlabel = control_title
+                            # set up skip property and control
+                            metadata_obj.skipTK = tk.IntVar(value=0)
+                            checkbox = tk.Checkbutton(control_frame, 
+                            text="Skip", 
+                            variable=metadata_obj.skipTK,  # Link the variable to the checkbox
+                            command=lambda currenti=i: self.skip_clicked(currenti))     # Call a function when clicked
+                            checkbox.pack(anchor="w")
+                            canv_controls_obj.skipTKcb = checkbox  # store reference to re-config the control later.
+                            # set up dont-split property and control
+                            metadata_obj.dont_splitTK = tk.IntVar(value=0)
+                            checkbox2 = tk.Checkbutton(control_frame, 
+                            text="Don't Split", 
+                            variable=metadata_obj.dont_splitTK,  # Link the variable to the checkbox
+                            command=lambda currenti=i: self.dontsplit_clicked(currenti))     # Call a function when clicked
+                            checkbox2.pack(anchor="w")
+                            canv_controls_obj.dont_splitTKcb = checkbox2  # store reference to re-config the control later.
+                            # set up dont-split property and control
+                            metadata_obj.select_overviewsTK = tk.IntVar(value=0)
+                            checkbox3 = tk.Checkbutton(control_frame, 
+                            text="Precede w/Overview", 
+                            variable=metadata_obj.select_overviewsTK,  # Link the variable to the checkbox
+                            command=lambda currenti=i: self.selectoverviews_clicked(currenti))     # Call a function when clicked
+                            checkbox3.pack(anchor="w")
+                            canv_controls_obj.select_overviewsTKcb = checkbox3  # store reference to re-config the control later.
+                            # set up split-spread property and control
+                            metadata_obj.split_spreadsTK = tk.IntVar(value=0)
+                            checkbox4 = tk.Checkbutton(control_frame, 
+                            text="Split before segmenting",
+                            variable=metadata_obj.split_spreadsTK,  # Link the variable to the checkbox
+                            command=lambda currenti=i: self.splitspreads_clicked(currenti))     # Call a function when clicked
+                            checkbox4.pack(anchor="w")
+                            canv_controls_obj.split_spreadsTKcb = checkbox4  # store reference to re-config the control later.
 
-                        # Put the image in the canvas
-                        pageimage_canvas.create_image(0, 0, image=photo, anchor='nw')
-                        pageimage_canvas.create_image(0, 0, image=over_photo, anchor='nw')
-                        # Create a Label to display the image
-                        # imagelabel = tk.Label(pageimage_frame, image=photo)
-                        # label.grid(row=i // 3, column=i % 3, padx=5, pady=5) # 3 columns grid layout
-                        # imagelabel.grid(row=i // 3, column=(i % 3)*2, padx=10, pady=5) # 3 double columns grid layout
-                        # imagelabel.place(x=0,y=0)
-                        # overlaylabel = tk.Label(pageimage_frame, image=over_photo)
-                        # overlaylabel.grid(row=i // 3, column=(i % 3)*2, padx=10, pady=5) # 3 double columns grid layout
-                        # overlaylabel.place(x=50,y=50)
+                            # Draw page for the first time
+                            refresh_page_canvas(i, "initial", self)
+                        else:
+                            # we're over our limit, but still need to set up the data structures for later pagination.
+                            metadata_obj.canvas_reference = None  #it's not linked to a visible canvas. 
+                            metadata_obj.skipTK = tk.IntVar(value=0)
+                            metadata_obj.dont_splitTK = tk.IntVar(value=0)
+                            metadata_obj.select_overviewsTK = tk.IntVar(value=0)
+                            metadata_obj.split_spreadsTK = tk.IntVar(value=0)
 
-                        control_frame = tk.Frame(self.scrollable_frame)
-                        control_frame.grid(row=i // 3, column=(i % 3) * 2 + 1, padx=10, pady=5)
-                        control_title = tk.Label(control_frame, text=f"page {i+1}")
-                        control_title.pack(anchor="w")
-                        metadata_Obj.skipTK = tk.IntVar(value=0)
-                        checkbox = tk.Checkbutton(control_frame, 
-                          text="Skip", 
-                          variable=metadata_Obj.skipTK,  # Link the variable to the checkbox
-                          command=lambda currenti=i: skip_clicked(currenti))     # Call a function when clicked
-                        checkbox.pack(anchor="w")
-                        metadata_Obj.dont_splitTK = tk.IntVar(value=0)
-                        checkbox2 = tk.Checkbutton(control_frame, 
-                          text="Don't Split", 
-                          variable=metadata_Obj.dont_splitTK,  # Link the variable to the checkbox
-                          command=lambda currenti=i: dontsplit_clicked(currenti))     # Call a function when clicked
-                        checkbox2.pack(anchor="w")
+                            # Freshen page for the first time (but it won't be drawn because current page not displaying it.)
+                            refresh_page_canvas(i, "initial", self)
+
                     except FileNotFoundError:
                         print(f"Error: Image not found at {path}")
                     except Exception as e:
@@ -1044,7 +1406,7 @@ def main():
 
         root = tk.Tk()
         root.title("Scrollable Image List")
-        root.geometry("1280x800")
+        root.geometry("1680x1200")
 
         # Create dummy image files for testing
         # if not os.path.exists("gui_images"):
@@ -1077,29 +1439,94 @@ def main():
         def on_closing():
             global STRING_ARGS
             STRING_ARGS = options_box.get("1.0", "end-1c")
-            # print("string_args now:", STRING_ARGS)
+            print("new command after edits:", STRING_ARGS)
             root.destroy()
 
         root.protocol("WM_DELETE_WINDOW", on_closing)
 
-        def on_button_click():
+        def on_update_click():
             """This function runs when the button is clicked."""
             print("Button was clicked! This code runs inside the event loop.")
             # You can interact with other widgets here, e.g., update a label.
-            label.config(text=STRING_ARGS)
+            # label.config(text=STRING_ARGS)
+            for metadata_obj in scroll_frame.page_metadata:
+                # print(metadata_obj.page_num)
+                refresh_page_canvas(metadata_obj.page_index, "marginrefresh", SCROLL_FRAME_REF)
 
+        def on_pagination_click(what_page):
+            num_pages = len(SCROLL_FRAME_REF.page_metadata)
+            new_start = what_page * GUI_PAGE_LIMIT
+            new_end = (what_page +1) * GUI_PAGE_LIMIT - 1
+            if new_end > num_pages - 1:
+                new_end = num_pages - 1
+            print(f"Pagination Button {what_page} was clicked! ({new_start}-{new_end})")
+            i = 0;
+            c = 0;
+            while i < num_pages:
+                metadata_obj = SCROLL_FRAME_REF.page_metadata[i]
+                if i >= new_start and i <= new_end:
+                    canvas_obj = SCROLL_FRAME_REF.canvas_display_and_controls[c]
+                    canvas_obj.canvas_reference.config(width=metadata_obj.width, height=metadata_obj.height)
+                    # make page index i have canvas reference to canvas obj c..
+                    metadata_obj.canvas_reference = canvas_obj.canvas_reference
+                    # link i's variables to its TK controls.
+                    canvas_obj.titleTKlabel.config(text="Page " + str(metadata_obj.page_num))
+                    canvas_obj.skipTKcb.config(variable=metadata_obj.skipTK, state=tk.NORMAL, command=lambda currenti=i: SCROLL_FRAME_REF.skip_clicked(currenti))
+                    canvas_obj.dont_splitTKcb.config(variable=metadata_obj.dont_splitTK, state=tk.NORMAL, command=lambda currenti=i: SCROLL_FRAME_REF.dontsplit_clicked(currenti))
+                    canvas_obj.select_overviewsTKcb.config(variable=metadata_obj.select_overviewsTK, state=tk.NORMAL, command=lambda currenti=i: SCROLL_FRAME_REF.selectoverviews_clicked(currenti))
+                    canvas_obj.split_spreadsTKcb.config(variable=metadata_obj.split_spreadsTK, state=tk.NORMAL, command=lambda currenti=i: SCROLL_FRAME_REF.splitspreads_clicked(currenti))
+                    # redraw canvas with new page.
+                    refresh_page_canvas(i, "pagination", SCROLL_FRAME_REF)
+                    c += 1
+                else:
+                    # set i's canvas reference to None.
+                    metadata_obj.canvas_reference = None  # Delinked.
+                i += 1
+            while c < GUI_PAGE_LIMIT:
+                canvas_obj = SCROLL_FRAME_REF.canvas_display_and_controls[c]
+                canvas_obj.canvas_reference.delete("all")
+                canvas_obj.titleTKlabel.config(text="-")
+                canvas_obj.skipTKcb.config(state=tk.DISABLED)
+                canvas_obj.dont_splitTKcb.config(state=tk.DISABLED)
+                canvas_obj.select_overviewsTKcb.config(state=tk.DISABLED)
+                canvas_obj.split_spreadsTKcb.config(state=tk.DISABLED)
+                c += 1
+                
         top_control_frame = tk.Frame(root)
         top_control_frame.pack(side=tk.TOP, fill=tk.X)
         options_box = tk.Text(top_control_frame, height=10, width=50, font=("Courier", 14, "normal")) 
         options_box.insert("1.0", STRING_ARGS)
         options_box.pack(side=tk.LEFT, fill=tk.X, expand=True, pady=10, padx=10)
+        options_box.bind("<KeyRelease>", on_key_release)
 
-        label = tk.Label(top_control_frame, text="Hello, Tkinter!")
-        label.pack()
+        #overall margin control
+        margin_label = tk.Label(top_control_frame, text="Margins")
+        margin_label.pack()
+        margin_frame1 = tk.Frame(top_control_frame)
+        margin_frame1.pack()
+        margin_top = tk.StringVar(value="4.0");
+        margin_topTK = tk.Entry(margin_frame1, textvariable=margin_top, width=4)
+        margin_topTK.pack()
+
+        margin_frame2 = tk.Frame(top_control_frame)
+        margin_frame2.pack()
+        margin_left = tk.StringVar(value="2.0");
+        margin_leftTK = tk.Entry(margin_frame2, textvariable=margin_left, width=4)
+        margin_leftTK.pack(side=tk.LEFT)
+        margin_right = tk.StringVar(value="2.0");
+        margin_rightTK = tk.Entry(margin_frame2, textvariable=margin_right, width=4)
+        margin_rightTK.pack(side=tk.RIGHT)
+
+        margin_frame3 = tk.Frame(top_control_frame)
+        margin_frame3.pack()
+        margin_bottom = tk.StringVar(value="4.0")
+        margin_bottomTK = tk.Entry(margin_frame3, textvariable=margin_bottom, width=4)
+        margin_bottomTK.pack()
 
         # The 'command' attribute links the button click event to the on_button_click function
-        button = tk.Button(top_control_frame, text="Start", command=on_button_click)
+        button = tk.Button(top_control_frame, text="Update", command=on_update_click)
         button.pack()
+
 
         # print("temp dir:",temp_png_path)
         # print("os.listdir(temp_dir):",os.listdir(temp_png_path))
@@ -1107,12 +1534,34 @@ def main():
         # print("image_files:",image_files)
         image_files.sort()
         scroll_frame = ScrollableImageFrame(root, image_files)
+        SCROLL_FRAME_REF = scroll_frame
         scroll_frame.pack(side=tk.TOP, fill="both", expand=True)
+
+        # print("setting up IntVars")
+        # scroll_frame.g_overlapTK = tk.IntVar(value=0)
+        # scroll_frame.g_overviewsTK = tk.IntVar(value=0)
+        # scroll_frame.g_sidewaysTK = tk.IntVar(value=0)
+
+        # scroll_frame.previous_options = ""
 
         bottom_control_frame = tk.Frame(root)
         bottom_control_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        howManyPages = len(SCROLL_FRAME_REF.page_metadata) // GUI_PAGE_LIMIT
         bot_label = tk.Label(bottom_control_frame, text="GUI work by Glenn Loos-Austin")
-        bot_label.pack()
+        if howManyPages:
+            bot_label.pack(side=tk.LEFT)
+            i = howManyPages
+            buttonA = tk.Button(bottom_control_frame, text=str(i * GUI_PAGE_LIMIT + 1) + "–" + str(len(SCROLL_FRAME_REF.page_metadata)), command=lambda currenti=i: on_pagination_click(currenti))
+            buttonA.pack(side=tk.RIGHT)
+            i -= 1
+            while i > -1:
+                buttonA = tk.Button(bottom_control_frame, text=str(i * GUI_PAGE_LIMIT + 1) + "–" + str((i+1)*GUI_PAGE_LIMIT), command=lambda currenti=i: on_pagination_click(currenti))
+                buttonA.pack(side=tk.RIGHT)
+                i -= 1
+            pages_label = tk.Label(bottom_control_frame, text="Pages")
+            pages_label.pack(side=tk.RIGHT)
+        else:
+            bot_label.pack()
 
         root.mainloop()
 
