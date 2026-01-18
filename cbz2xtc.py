@@ -68,16 +68,66 @@ def find_png2xtc():
     return None
 
 def gui_preview_image(img_data, output_path_base, page_num):
+    boxsize = GUI_PREVIEW_SIZE
     try:
-        a=Path(output_path_base.parent / f"{page_num:04d}_preview.png")
+        a=Path(output_path_base.parent / f"{page_num:04d}_preview_{boxsize}.png")
         if not a.exists():
             from io import BytesIO
             uncropped_img = Image.open(BytesIO(img_data))
-            output_page = output_path_base.parent / f"{page_num:04d}_preview.png"
-            save_gui_thumbs(uncropped_img, output_page)
+            output_page = output_path_base.parent / f"{page_num:04d}_preview_{boxsize}.png"
+            save_gui_thumbs(uncropped_img, output_page, boxsize=boxsize)
     except Exception as e:
         print(f"    Warning: Could not optimize image: {e}")
         return 0
+
+def contrast_boost_image(input_img, need_boost=False, contrast_values=None, page_num="0"):
+    if not need_boost:
+        need_boost = CONTRAST_BOOST
+    if not contrast_values:
+        contrast_values = CONTRAST_VALUE
+    contrast_black = 0
+    contrast_white = 0
+    if contrast_values and len(contrast_values.split(',')) > 1:
+        contrast_black = int(contrast_values.split(',')[0])
+        contrast_white = int(contrast_values.split(',')[1])
+    elif contrast_values:
+        contrast_black = int(contrast_values)
+        contrast_white = int(contrast_values)
+    else:
+        contrast_black = 0
+        contrast_white = 0
+    if SPECIAL_CONTRASTS and page_num in SPECIAL_CONTRAST_PAGES:
+        need_boost = True
+        special_contrast_pos = SPECIAL_CONTRAST_PAGES.index(page_num)
+        contrast_black = SPECIAL_CONTRAST_DARKS[special_contrast_pos]
+        contrast_white = SPECIAL_CONTRAST_LIGHTS[special_contrast_pos]
+    #enhance contrast
+    output_img = None
+    if need_boost:
+        # print("contrast settings:", contrast_black, contrast_white, "page:", page_num)
+        if contrast_black == 0 and contrast_white == 0:
+            pass  # we don't need to adjust contrast at all.
+        elif contrast_black != contrast_white:
+            #passed a list of 2, first is dark cutoff, second is bright cutoff.
+            black_cutoff = 3 * contrast_black
+            white_cutoff = 3 + 9 * contrast_white
+            output_img = ImageOps.autocontrast(input_img, cutoff=(black_cutoff,white_cutoff), preserve_tone=True)
+        elif int(contrast_black) < 0 or int(contrast_black) > 8:
+            pass # value out of range. we'll treat like 0.
+        else:
+            black_cutoff = 3 * contrast_black
+            white_cutoff = 3 + 9 * contrast_white
+            output_img = ImageOps.autocontrast(input_img, cutoff=(black_cutoff,white_cutoff), preserve_tone=True)
+    else:
+        # nothing set, so we go with the default value of 4. 
+        black_cutoff = 3 * 4    # default, contrast level 4 = 12
+        white_cutoff = 3 + 9 * 4    # default, contrast level 4 = 39
+        output_img = ImageOps.autocontrast(input_img, cutoff=(black_cutoff,white_cutoff), preserve_tone=True)
+        # uncropped_img = ImageOps.autocontrast(uncropped_img, cutoff=(8,35), preserve_tone=True)
+    if output_img:
+        return output_img
+    else:
+        return input_img
 
 def optimize_image(img_data, output_path_base, page_num, suffix=""):
     """
@@ -176,44 +226,7 @@ def optimize_image(img_data, output_path_base, page_num, suffix=""):
                 # print("skipping page:",page_num)
             return 0
 
-        need_boost = CONTRAST_BOOST
-        contrast_black = 0
-        contrast_white = 0
-        if CONTRAST_VALUE and len(CONTRAST_VALUE.split(',')) > 1:
-            contrast_black = int(CONTRAST_VALUE.split(',')[0])
-            contrast_white = int(CONTRAST_VALUE.split(',')[1])
-        elif CONTRAST_VALUE:
-            contrast_black = int(CONTRAST_VALUE)
-            contrast_white = int(CONTRAST_VALUE)
-        else:
-            contrast_black = 0
-            contrast_white = 0
-        if SPECIAL_CONTRASTS and page_num in SPECIAL_CONTRAST_PAGES:
-            need_boost = True
-            special_contrast_pos = SPECIAL_CONTRAST_PAGES.index(page_num)
-            contrast_black = SPECIAL_CONTRAST_DARKS[special_contrast_pos]
-            contrast_white = SPECIAL_CONTRAST_LIGHTS[special_contrast_pos]
-        #enhance contrast
-        if need_boost:
-            if contrast_black == 0 and contrast_white == 0:
-                pass  # we don't need to adjust contrast at all.
-            elif contrast_black != contrast_white:
-                #passed a list of 2, first is dark cutoff, second is bright cutoff.
-                black_cutoff = 3 * contrast_black
-                white_cutoff = 3 + 9 * contrast_white
-                uncropped_img = ImageOps.autocontrast(uncropped_img, cutoff=(black_cutoff,white_cutoff), preserve_tone=True)
-            elif int(contrast_black) < 0 or int(contrast_black) > 8:
-                pass # value out of range. we'll treat like 0.
-            else:
-                black_cutoff = 3 * contrast_black
-                white_cutoff = 3 + 9 * contrast_white
-                uncropped_img = ImageOps.autocontrast(uncropped_img, cutoff=(black_cutoff,white_cutoff), preserve_tone=True)
-        else:
-            # nothing set, so we go with the default value of 4. 
-            black_cutoff = 3 * 4    # default, contrast level 4 = 12
-            white_cutoff = 3 + 9 * 4    # default, contrast level 4 = 39
-            uncropped_img = ImageOps.autocontrast(uncropped_img, cutoff=(black_cutoff,white_cutoff), preserve_tone=True)
-            # uncropped_img = ImageOps.autocontrast(uncropped_img, cutoff=(8,35), preserve_tone=True)
+        uncropped_img = contrast_boost_image(uncropped_img, page_num = page_num)
 
         # Convert to grayscale
         if uncropped_img.mode != 'L':
@@ -223,11 +236,11 @@ def optimize_image(img_data, output_path_base, page_num, suffix=""):
         width, height = img.size
 
         #crop margins in percentage. 
-        if MARGIN:
+        if MARGIN or suffix:
             if MARGIN_VALUE == "0":
                 pass #we don't need to do margins at all.
-            elif MARGIN_VALUE.lower() == "auto":
-                # trim white space from all four sides.
+            elif MARGIN_VALUE.lower() == "auto" or suffix:
+                # trim white space from all four sides.  # This is always used for split-spreads, since other margins unreliable. 
                 invert_img=ImageOps.invert(uncropped_img) #invert image
                 invert_img=ImageOps.autocontrast(invert_img,cutoff=(59,40))
                 image_box_coords = invert_img.getbbox() # bounding rect around anything not true black.
@@ -529,12 +542,12 @@ def save_with_padding(img, output_path, *, padcolor=255, thumbnail=False):
     
     return output_path.stat().st_size
 
-def save_gui_thumbs(img, output_path):
+def save_gui_thumbs(img, output_path, boxsize=400):
     """
     Resize image to fit within 400x400
     """
     img_width, img_height = img.size
-    scale = min(400 / img_width, 400 / img_height)
+    scale = min(boxsize / img_width, boxsize / img_height)
     
     new_width = int(img_width * scale)
     new_height = int(img_height * scale)
@@ -825,6 +838,8 @@ def main():
     global SPECIAL_CONTRAST_DARKS
     global SPECIAL_CONTRAST_LIGHTS
     global PADDING_COLOR
+    global GUI_PREVIEW_SIZE
+
 
     clean_temp = "--clean" in sys.argv
     USE_DITHERING = "--no-dither" not in sys.argv  # Inverted logic
@@ -885,6 +900,7 @@ def main():
     GUI_COLUMNS = 3
     # GUI_PAGE = 0
     GUI_PAGE_LIMIT = 72  #with three columns, this is 24 rows. 
+    GUI_PREVIEW_SIZE = 600
 
     if GUIMODE: 
         def refresh_page_canvas(page_index, what_changed, scroll_frame_ref):
@@ -898,16 +914,35 @@ def main():
             # "marginrefresh"
             # "commandline"
             metadata_obj = scroll_frame_ref.page_metadata[page_index]
-            if page_index < 3 or (not what_changed == "initial" and not what_changed == "marginrefresh" and not what_changed == "pagination"):
+            if page_index < 3 or (not what_changed == "initial" and not what_changed == "marginrefresh" and not what_changed == "pagination"
+                and not what_changed == "outlined" and not what_changed == "shaded" and not what_changed == "preview" and not what_changed == "contrastrefresh"):
                 print(f"State of {what_changed} modified for page {metadata_obj.page_num} display.")
             replace_canvas = metadata_obj.canvas_reference
             replace_img = metadata_obj.photo_reference
             if replace_canvas:
-                if False:
+                if scroll_frame_ref.g_previewTK.get():
                     # This will be a "show with approximate contrast" setting.
-                    dither_img = metadata_obj.image_reference.convert('1', dither=Image.Dither.FLOYDSTEINBERG)
-                    replace_img = ImageTk.PhotoImage(dither_img)
-                    metadata_obj.photo_reference = replace_img  # No going back for now.
+                    darkval = scroll_frame_ref.contrast_dark_input.get()
+                    lightval = scroll_frame_ref.contrast_light_input.get()
+                    if darkval == "":
+                        darkval = "0"
+                    if lightval == "":
+                        lightval = darkval
+                    if metadata_obj.photo_reference_dithered and metadata_obj.prd_dark_contrast_used == darkval and metadata_obj.prd_light_contrast_used == lightval:
+                        # it's what we used before, use it again.
+                        replace_img = metadata_obj.photo_reference_dithered
+                    else:
+                        dither_img = metadata_obj.image_reference.convert('L')
+                        # dither_img = dither_img.resize((metadata_obj.width*2, metadata_obj.height*2), Image.Resampling.LANCZOS) 
+                        dither_img = contrast_boost_image(dither_img, need_boost=True, contrast_values=f"{darkval},{lightval}", page_num = page_index + 1)
+                        dither_img = dither_img.convert('1', dither=Image.Dither.FLOYDSTEINBERG)
+                        # dither_img = dither_img.convert('L')
+                        # dither_img = dither_img.resize((metadata_obj.width, metadata_obj.height), Image.Resampling.LANCZOS) 
+                        replace_img = ImageTk.PhotoImage(dither_img)
+                        # replace_img = replace_img._PhotoImage__photo.subsample(2,2)
+                        metadata_obj.photo_reference_dithered = replace_img
+                        metadata_obj.prd_dark_contrast_used = darkval
+                        metadata_obj.prd_light_contrast_used = lightval
                 replace_canvas.delete("all")
                 replace_canvas.create_image(0, 0, image=replace_img, anchor='nw') # restore or init canvas to unaltered base image.
                 # so long as it's not None, which which would mean it's currently undisplayed due to pagination.
@@ -926,10 +961,10 @@ def main():
             if replace_canvas:
                 # so long as it's not None, which which would mean it's currently undisplayed due to pagination.
                 overlay_img = Image.new('RGBA', (width, height), color=(0, 0, 0, 0))
+                draw = ImageDraw.Draw(overlay_img)
                 # margin display
-                if True and not metadata_obj.dont_splitTK.get(): 
-                    # margins are active and we're splitting this page, so they should be shown.
-                    draw = ImageDraw.Draw(overlay_img)
+                if True and not metadata_obj.dont_splitTK.get() and not metadata_obj.split_spreadsTK.get(): 
+                    # margins are active and we're segmenting this page, so they should be shown.
                     # draw.rectangle((20,20,width-20,height-20), outline=(0,0,255,128), width=2)
                     top = int(height * float(margin_top.get()) / 100.0)
                     bottom = height - int(height * float(margin_bottom.get()) / 100.0)
@@ -942,6 +977,153 @@ def main():
                     draw.rectangle((0,bottom,width,height), fill=(50, 50, 50, 220))
                     # draw.rectangle((left,top,right,bottom), outline=(0,0,255,128), width=2)
                 # Put our new overlay in place.
+                elif metadata_obj.split_spreadsTK.get():
+                    # show center divider since it's a split spread page. 
+                    hcenter = width // 2
+                    draw.rectangle((hcenter-3,0,hcenter+3,height), fill=(50,50,50,255))
+
+
+                if not metadata_obj.dont_splitTK.get():
+                    # we need to show how it will be split up. (for now not worrying about special splits or split spreads or max width (yet))
+                    number_of_h_segments = SET_H_OVERLAP_SEGMENTS
+                    h_overlap_percent = SET_H_OVERLAP_PERCENT
+                    if metadata_obj.split_spreadsTK.get():
+                        width = width // 2
+                        top = int(height * float(margin_top.get()) / 100.0)
+                        bottom = height - int(height * float(margin_bottom.get()) / 100.0)
+                        left = int(width * float(margin_left.get()) * 2 / 100.0) # doubled because of halfing
+                        right = width - 5; #leave room for center split bar. 
+                    else:
+                        top = int(height * float(margin_top.get()) / 100.0)
+                        bottom = height - int(height * float(margin_bottom.get()) / 100.0)
+                        left = int(width * float(margin_left.get()) / 100.0)
+                        right = width - int(width * float(margin_right.get()) / 100.0)
+                    cropped_width = right - left
+                    local_max_width = int(MAX_SPLIT_WIDTH / 800.0 * cropped_width)
+                    # if SPECIAL_SPLITS and page_num in SPECIAL_SPLIT_PAGES:
+                    #     special_split_pos = SPECIAL_SPLIT_PAGES.index(page_num)
+                    #     number_of_h_segments = SPECIAL_SPLIT_HSPLITS[special_split_pos]
+                    #     h_overlap_percent = SPECIAL_SPLIT_HOVERLAP[special_split_pos]
+                    total_calculated_width = local_max_width * number_of_h_segments - int((number_of_h_segments - 1) * (local_max_width * 0.01 * h_overlap_percent))
+                        # so, 1 = 800. 2 with 33% overlap = 1334, 3 with 33% overlap = 1868px, etc.
+                    established_scale = total_calculated_width * 1.0 / cropped_width
+                        # so for 2000px wide source, 1= 0.4, 2=0.667, etc. 
+                    # print("cropped_width:", cropped_width)
+                    # print("total_calculated_width:", total_calculated_width)
+
+                    overlapping_width = int(local_max_width / established_scale // 1)
+                    # print("overlapping_width:", overlapping_width)
+                    # print("total_calculated_width:", total_calculated_width)
+                    shiftover_to_overlap = 0
+                    if number_of_h_segments > 1:
+                        shiftover_to_overlap = overlapping_width - (overlapping_width * number_of_h_segments - cropped_width) // (number_of_h_segments - 1)
+                    # print("shiftover_to_overlap:", shiftover_to_overlap)
+                    number_of_v_segments = DESIRED_V_OVERLAP_SEGMENTS - 1
+                    minimum_v_overlap = MINIMUM_V_OVERLAP_PERCENT
+                    # if SPECIAL_SPLITS and page_num in SPECIAL_SPLIT_PAGES:
+                    #     special_split_pos = SPECIAL_SPLIT_PAGES.index(page_num)
+                    #     number_of_v_segments = SPECIAL_SPLIT_VSPLITS[special_split_pos]-1
+                    #     minimum_v_overlap = -100
+                    # letter_keys = ["a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z"]
+                    # letter_keys_hsplit = ["a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z"]
+                    # if IS_MANGA:
+                    #     letter_keys_hsplit.reverse()
+
+                    cropped_height = bottom - top
+                    overlapping_height = int(480.0/800 * cropped_width / established_scale // 1)
+                    # print("overlapping_height:", overlapping_height)
+                    # print("cropped_height:", cropped_height)
+                    shiftdown_to_overlap = 9999
+                    while number_of_v_segments < 26 and (shiftdown_to_overlap * 1.0 / overlapping_height) > (1.0 - .01 * minimum_v_overlap):
+                        # iterate until we have a number of segments that cover the page with sufficient overlap.
+                        # the first iteration should fix the 99999 thing and set up our "base" attempt.
+                        number_of_v_segments += 1
+                        # print("aaashiftdown_to_overlap:", shiftdown_to_overlap)
+                        shiftdown_to_overlap = 0
+                        # print("bbbshiftdown_to_overlap:", shiftdown_to_overlap)
+                        if number_of_v_segments > 1:
+                            # print("(overlapping_height * number_of_v_segments - cropped_height):", (overlapping_height * number_of_v_segments - cropped_height))
+                            # print("(number_of_v_segments - 1):", (number_of_v_segments - 1))
+                            # print("calc:", (overlapping_height * number_of_v_segments - cropped_height) / (number_of_v_segments - 1))
+                            shiftdown_to_overlap = overlapping_height - (overlapping_height * number_of_v_segments - cropped_height) // (number_of_v_segments - 1)
+                            # print("zzzshiftdown_to_overlap:", shiftdown_to_overlap)
+
+
+                    # Mark overlapping segments that would fill the screen (at our scale)
+                    v = 0
+                    use_segment_list = []
+                    # if SPECIAL_SPLITS and page_num in SPECIAL_SPLIT_PAGES:
+                    #     special_split_pos = SPECIAL_SPLIT_PAGES.index(page_num)
+                    #     use_segment_list = SPECIAL_SPLIT_BOOLEANS[special_split_pos]
+                    #     print("special split for page:",SPECIAL_SPLIT_PAGES[special_split_pos]," segment list:",use_segment_list)
+                    # print("number of h segments:", number_of_h_segments)
+                    # print("number of v segments:", number_of_v_segments)
+                    overlay_img2 = Image.new('RGBA', (width, height), color=(0, 0, 0, 0))
+                    draw2 = ImageDraw.Draw(overlay_img2)
+
+                    while v < number_of_v_segments:
+                        # print("v:", v)
+                        h = 0
+                        while h < number_of_h_segments:
+                            # segment = img.crop((shiftover_to_overlap*h, shiftdown_to_overlap*v, width-(shiftover_to_overlap*(number_of_h_segments-h-1)), height-(shiftdown_to_overlap*(number_of_v_segments-v-1))))
+                            # draw.rectangle((shiftover_to_overlap*h+left+(v+1)*3, shiftdown_to_overlap*v+top+(v+1)*2, cropped_width-(shiftover_to_overlap*(number_of_h_segments-h-1))+left+(v+1)*3, cropped_height-(shiftdown_to_overlap*(number_of_v_segments-v-1))+top+(v+1)*3), outline=(0,0,0,160), width=4)
+
+                            if v > 0 and scroll_frame_ref.g_shadedTK.get():
+                                draw.rectangle((shiftover_to_overlap*h+left, shiftdown_to_overlap*v+top, cropped_width-(shiftover_to_overlap*(number_of_h_segments-h-1))+left, shiftdown_to_overlap*v+top+(overlapping_height - shiftdown_to_overlap)), fill=(96,96,127,150))
+                            
+                            if h > 0 and scroll_frame_ref.g_shadedTK.get():
+                                draw2.rectangle((shiftover_to_overlap*h+left, shiftdown_to_overlap*v+top, shiftover_to_overlap*h+left+(overlapping_width - shiftover_to_overlap), cropped_height-(shiftdown_to_overlap*(number_of_v_segments-v-1))+top), fill=(96,127,96,100))
+                                over_photo2 = ImageTk.PhotoImage(overlay_img2)
+                                metadata_obj.overlay_reference2 = over_photo2  # to prevent garbage collection?
+                                replace_canvas.create_image(0, 0, image=over_photo2, anchor='nw')
+ 
+                            if scroll_frame_ref.g_outlinedTK.get():
+                                draw.rectangle((shiftover_to_overlap*h+left+v*1-1, shiftdown_to_overlap*v+top-1, cropped_width-(shiftover_to_overlap*(number_of_h_segments-h-1))+left+v*1+1, cropped_height-(shiftdown_to_overlap*(number_of_v_segments-v-1))+top+1), outline=(255,255,255,255), width=7)
+                                draw.rectangle((shiftover_to_overlap*h+left+v*1+1, shiftdown_to_overlap*v+top+1, cropped_width-(shiftover_to_overlap*(number_of_h_segments-h-1))+left+v*1-1, cropped_height-(shiftdown_to_overlap*(number_of_v_segments-v-1))+top-1), outline=(255,0,0,255), width=3)                            # if number_of_h_segments > 1:
+                           
+                            if metadata_obj.split_spreadsTK.get():
+                                local_left = width + 5
+                                if v > 0 and scroll_frame_ref.g_shadedTK.get():
+                                    draw.rectangle((shiftover_to_overlap*h+local_left, shiftdown_to_overlap*v+top, cropped_width-(shiftover_to_overlap*(number_of_h_segments-h-1))+local_left, shiftdown_to_overlap*v+top+(overlapping_height - shiftdown_to_overlap)), fill=(96,96,127,150))
+                                
+                                if h > 0 and scroll_frame_ref.g_shadedTK.get():
+                                    draw2.rectangle((shiftover_to_overlap*h+local_left, shiftdown_to_overlap*v+top, shiftover_to_overlap*h+local_left+(overlapping_width - shiftover_to_overlap), cropped_height-(shiftdown_to_overlap*(number_of_v_segments-v-1))+top), fill=(96,127,96,100))
+                                    over_photo2 = ImageTk.PhotoImage(overlay_img2)
+                                    metadata_obj.overlay_reference2 = over_photo2  # to prevent garbage collection?
+                                    replace_canvas.create_image(0, 0, image=over_photo2, anchor='nw')
+    
+                                if scroll_frame_ref.g_outlinedTK.get():
+                                    draw.rectangle((shiftover_to_overlap*h+local_left+v*1-1, shiftdown_to_overlap*v+top-1, cropped_width-(shiftover_to_overlap*(number_of_h_segments-h-1))+local_left+v*1+1, cropped_height-(shiftdown_to_overlap*(number_of_v_segments-v-1))+top+1), outline=(255,255,255,255), width=7)
+                                    draw.rectangle((shiftover_to_overlap*h+local_left+v*1+1, shiftdown_to_overlap*v+top+1, cropped_width-(shiftover_to_overlap*(number_of_h_segments-h-1))+local_left+v*1-1, cropped_height-(shiftdown_to_overlap*(number_of_v_segments-v-1))+top-1), outline=(255,0,0,255), width=3)                            # if number_of_h_segments > 1:
+
+                            #     output = output_path_base.parent / f"{page_num:04d}{suffix}_3_{letter_keys[v]}_{letter_keys_hsplit[h]}.png"
+                            # else:
+                            #     output = output_path_base.parent / f"{page_num:04d}{suffix}_3_{letter_keys[v]}.png"
+                            # if THUMBNAIL_WIDTH > 0:
+                            #     if THUMBNAIL_HIGHLIGHT_ACTIVE:
+                            #         highlight_opacity = 96
+                            #         thumbnail_overlay = Image.new('LA', img_thumbnail.size)
+                            #         draw_thumb_overlay = ImageDraw.Draw(thumbnail_overlay)
+                            #         thumb_region_right = int(thumbnail_height - shiftdown_to_overlap*v*thumbnail_scale)
+                            #         thumb_region_top = int(shiftover_to_overlap*h*thumbnail_scale)
+                            #         thumb_region_left = int(thumbnail_height - shiftdown_to_overlap*v*thumbnail_scale - overlapping_height*thumbnail_scale)
+                            #         thumb_region_bottom = int(THUMBNAIL_WIDTH-(shiftover_to_overlap*(number_of_h_segments-h-1))*thumbnail_scale)
+                            #         draw_thumb_overlay.rectangle((thumb_region_left,thumb_region_top,thumb_region_right,thumb_region_bottom), fill=(255,highlight_opacity), outline=(PADDING_COLOR,255), width=3)
+                            #         img_temp_thumbnail = Image.alpha_composite(img_thumbnail, thumbnail_overlay).convert("L")
+                            #         if len(use_segment_list)==0 or use_segment_list[0]=="1":
+                            #             size = save_with_padding(segment_rotated, output, padcolor=PADDING_COLOR, thumbnail=img_temp_thumbnail)    
+                            #     else:
+                            #         if len(use_segment_list)==0 or use_segment_list[0]=="1":
+                            #             size = save_with_padding(segment_rotated, output, padcolor=PADDING_COLOR, thumbnail=img_thumbnail)
+                            # else:
+                            #     if len(use_segment_list)==0 or use_segment_list[0]=="1":
+                            #         size = save_with_padding(segment_rotated, output, padcolor=PADDING_COLOR)
+                            # if len(use_segment_list)>0:
+                            #     use_segment_list.pop(0)
+                            h += 1
+                        v += 1
+
+
                 over_photo = ImageTk.PhotoImage(overlay_img)
                 metadata_obj.overlay_reference = over_photo # Store reference
                 replace_canvas.create_image(0, 0, image=over_photo, anchor='nw')
@@ -1108,6 +1290,20 @@ def main():
                         for metadata_obj in scroll_frame_ref.page_metadata:
                             # print(metadata_obj.page_num)
                             refresh_page_canvas(metadata_obj.page_index, "marginrefresh", scroll_frame_ref)
+                    if val.startswith("contrast-boost "):
+                        boost_list = val.split(' ')[1].split(',')
+                        #print("contrast changed",boost_list)
+                        if len(boost_list) == 1:
+                            scroll_frame_ref.contrast_dark_input.set(boost_list[0])
+                            scroll_frame_ref.contrast_light_input.set(boost_list[0])
+                        elif len(boost_list) > 1:
+                            scroll_frame_ref.contrast_dark_input.set(boost_list[0])
+                            scroll_frame_ref.contrast_light_input.set(boost_list[1])
+                        else:
+                            scroll_frame_ref.contrast_dark_input.set("")
+                            scroll_frame_ref.contrast_light_input.set("")
+                        for metadata_obj in scroll_frame_ref.page_metadata:
+                            refresh_page_canvas(metadata_obj.page_index, "contrastrefresh", scroll_frame_ref)
 
             scroll_frame_ref.g_overlapTK.set(value="overlap" in split_values)
             scroll_frame_ref.g_overviewsTK.set(value="include-overviews" in split_values)
@@ -1136,7 +1332,11 @@ def main():
             split_spreadsTK = None #tk.IntVar(value=0)
             image_reference = None
             photo_reference = None #a TK Photo wrapper. 
+            photo_reference_dithered = None #a TK Photo wrapper. 
+            prd_dark_contrast_used = "-1"
+            prd_light_contrast_used = "-1"
             overlay_reference = None
+            overlay_reference2 = None  # used rarely, for horizontal split overlay at this time.
             canvas_reference = None
             width = -1
             height = -1
@@ -1153,6 +1353,9 @@ def main():
             dont_splitTKcb = None  # A checkbutton
             select_overviewsTKcb = None  # A checkbutton
             split_spreadsTKcb = None  # A checkbutton
+            previewTK = None
+            shadedTK = None
+            outlinedTK = None
             canvas_reference = None  # A page display canvas
 
             def __init__(self, canvas_index):
@@ -1172,6 +1375,8 @@ def main():
                 self.g_sidewaysTK = None # tk.IntVar(value=0)
                 self.g_mangaTK = None # tk.IntVar(value=0)
                 self.g_padBlackTK = None # tk.IntVar(value=0)
+                self.contrast_dark_input = tk.StringVar(value="")
+                self.contrast_light_input = tk.StringVar(value="")
                 # print(self.g_overlapTK.get())
 
                 # 1. Create a Canvas and a Scrollbar
@@ -1235,11 +1440,11 @@ def main():
                 refresh_options(page_index, "dontsplit", self)
 
             def selectoverviews_clicked(self, page_index):
-                # refresh_page_canvas(page_index, "selectoverviews", self)  // not needed because no change.
+                # refresh_page_canvas(page_index, "selectoverviews", self)  # not needed because no change.
                 refresh_options(page_index, "selectoverviews", self)
 
             def splitspreads_clicked(self, page_index):
-                # refresh_page_canvas(page_index, "splitspreads", self)  // not needed because no change.
+                refresh_page_canvas(page_index, "splitspreads", self)
                 refresh_options(page_index, "splitspreads", self)
 
             def load_images(self):
@@ -1264,6 +1469,24 @@ def main():
                 def padblack_clicked():
                     print("padblack clicked")
                     refresh_options(-1, "padblack", self)
+
+                def outlined_clicked():
+                    print("outlined clicked")
+                    # refresh_options(-1, "outlined", self)
+                    for metadata_obj in self.page_metadata:
+                        refresh_page_canvas(metadata_obj.page_index, "outlined", self)
+
+                def shaded_clicked():
+                    print("shaded clicked")
+                    # refresh_options(-1, "shaded", self)
+                    for metadata_obj in self.page_metadata:
+                        refresh_page_canvas(metadata_obj.page_index, "shaded", self)
+
+                def preview_clicked():
+                    print("preview clicked")
+                    # refresh_options(-1, "preview", self)
+                    for metadata_obj in self.page_metadata:
+                        refresh_page_canvas(metadata_obj.page_index, "preview", self)
 
                 scroll_frame = self.scrollable_frame
                
@@ -1310,10 +1533,53 @@ def main():
 
                 top_scroll_controls_frame3 = tk.Frame(scroll_frame)
                 top_scroll_controls_frame3.grid(row=2,column=0,columnspan=GUI_COLUMNS*2,pady=0)
+                segmentation_label = tk.Label(top_scroll_controls_frame3, text="Segmentation:")
+                segmentation_label.pack(side=tk.LEFT, anchor="w")
 
-                spacer_label = tk.Label(top_scroll_controls_frame3, text=" ")
+                self.g_outlinedTK = tk.IntVar(value=0)
+                checkbox_g5 = tk.Checkbutton(top_scroll_controls_frame3, 
+                    text="Show Borders",
+                    variable=self.g_outlinedTK,  # Link the variable to the checkbox
+                    command=outlined_clicked)     # Call a function when clicked
+                checkbox_g5.pack(side=tk.LEFT, anchor="w")
+
+                self.g_shadedTK = tk.IntVar(value=1)
+                checkbox_g6 = tk.Checkbutton(top_scroll_controls_frame3, 
+                    text="Shade Overlap Regions",
+                    variable=self.g_shadedTK,  # Link the variable to the checkbox
+                    command=shaded_clicked)     # Call a function when clicked
+                checkbox_g6.pack(side=tk.LEFT, anchor="w")
+
+                top_scroll_controls_frame4 = tk.Frame(scroll_frame)
+                top_scroll_controls_frame4.grid(row=3,column=0,columnspan=GUI_COLUMNS*2,pady=0)
+                segmentation_label = tk.Label(top_scroll_controls_frame4, text="Contrast Boost:")
+                segmentation_label.pack(side=tk.LEFT, anchor="w")
+
+                contrast_dark_label = tk.Label(top_scroll_controls_frame4, text="Darker Darks")
+                contrast_dark_label.pack(side=tk.LEFT, anchor="w")
+                # scroll_frame.contrast_dark_input = tk.StringVar(value="");
+                contrast_dark_TK = tk.Entry(top_scroll_controls_frame4, textvariable=self.contrast_dark_input, width=4)
+                contrast_dark_TK.pack(side=tk.LEFT, padx=(0, 20))
+                contrast_light_label = tk.Label(top_scroll_controls_frame4, text="Lighter Lights")
+                contrast_light_label.pack(side=tk.LEFT, anchor="w")
+                # scroll_frame.contrast_light_input = tk.StringVar(value="");
+                contrast_light_TK = tk.Entry(top_scroll_controls_frame4, textvariable=self.contrast_light_input, width=4)
+                contrast_light_TK.pack(side=tk.LEFT, padx=(0, 20))
+
+                self.g_previewTK = tk.IntVar(value=1)
+                checkbox_g5 = tk.Checkbutton(top_scroll_controls_frame4, 
+                    text="Preview Approximate Contrast",
+                    variable=self.g_previewTK,  # Link the variable to the checkbox
+                    command=preview_clicked)     # Call a function when clicked
+                checkbox_g5.pack(side=tk.LEFT, anchor="w")
+
+                top_scroll_controls_frame5 = tk.Frame(scroll_frame)
+                top_scroll_controls_frame5.grid(row=4,column=0,columnspan=GUI_COLUMNS*2,pady=0)
+                spacer_label = tk.Label(top_scroll_controls_frame5, text=" ")
                 spacer_label.pack(side=tk.LEFT, anchor="w")
 
+                header_offset = 5 #account for the rows of controls and the spacer. 
+                
                 if len(self.image_paths) < 100:
                     #let's increase the gui page limit a bit to avoid having pagination with just a few on page 2.
                     GUI_PAGE_LIMIT = 99
@@ -1342,13 +1608,13 @@ def main():
                             canv_controls_obj = self.canvas_display_and_controls[i]
                             # Create canvas to draw base image and overlay image (with splits and crops) in.
                             pageimage_canvas = tk.Canvas(self.scrollable_frame, width=width, height=height)
-                            pageimage_canvas.grid(row=i // GUI_COLUMNS + 3, column=(i % GUI_COLUMNS)*2, padx=5, pady=5, sticky=tk.E) # 3 double columns grid layout
+                            pageimage_canvas.grid(row=i // GUI_COLUMNS + header_offset, column=(i % GUI_COLUMNS)*2, padx=5, pady=5, sticky=tk.E) # 3 double columns grid layout
                             metadata_obj.canvas_reference = pageimage_canvas # Store reference for one in use.
                             canv_controls_obj.canvas_reference = pageimage_canvas # Store reference for reuse in pagination.
                             # Add the controls and init the associated variables.
                             # set up the surrounding frame
                             control_frame = tk.Frame(self.scrollable_frame)
-                            control_frame.grid(row=i // GUI_COLUMNS + 3, column=(i % GUI_COLUMNS) * 2 + 1, padx=5, pady=5)
+                            control_frame.grid(row=i // GUI_COLUMNS + header_offset, column=(i % GUI_COLUMNS) * 2 + 1, padx=5, pady=5)
                             # put a title at the top.
                             control_title = tk.Label(control_frame, text=f"page {i+1}")
                             control_title.pack(anchor="w")
@@ -1380,7 +1646,7 @@ def main():
                             # set up split-spread property and control
                             metadata_obj.split_spreadsTK = tk.IntVar(value=0)
                             checkbox4 = tk.Checkbutton(control_frame, 
-                            text="Split before segmenting",
+                            text="Split into two pages",
                             variable=metadata_obj.split_spreadsTK,  # Link the variable to the checkbox
                             command=lambda currenti=i: self.splitspreads_clicked(currenti))     # Call a function when clicked
                             checkbox4.pack(anchor="w")
@@ -1417,10 +1683,10 @@ def main():
         #         img.save(f"gui_images/image_{i+1}.png")
 
         # Get list of image file paths
-        MARGIN_VALUE = "0"
-        STOP_PAGE = 6
-        USE_DITHERING = False
-        print("sys.argv[1]",sys.argv[1])
+        # MARGIN_VALUE = "0"
+        # STOP_PAGE = 6
+        # USE_DITHERING = False
+        # print("sys.argv[1]",sys.argv[1])
         input_dir = Path(sys.argv[1])
         temp_dir = input_dir / "gui_temp_png"
         # Find all CBZ files (including in subdirectories)
@@ -1431,7 +1697,7 @@ def main():
         cbz_files.extend(sorted(input_dir.glob("*.CBZ")))
         cbz_path = cbz_files[0]
         temp_png_path = extract_cbz_to_png(cbz_path, temp_dir, gui_thumbnails=True)
-        STOP_PAGE = False
+        # STOP_PAGE = False
 
         global STRING_ARGS
         STRING_ARGS = " ".join(sys.argv)
@@ -1530,7 +1796,8 @@ def main():
 
         # print("temp dir:",temp_png_path)
         # print("os.listdir(temp_dir):",os.listdir(temp_png_path))
-        image_files = [os.path.join(temp_png_path, f) for f in os.listdir(temp_png_path) if f.endswith('.png')]
+        target_size = GUI_PREVIEW_SIZE
+        image_files = [os.path.join(temp_png_path, f) for f in os.listdir(temp_png_path) if f.endswith(f"{target_size}.png")]
         # print("image_files:",image_files)
         image_files.sort()
         scroll_frame = ScrollableImageFrame(root, image_files)
@@ -1687,9 +1954,9 @@ def main():
     
     print(f"\nInput directory: {input_dir.absolute()}")
     if USE_DITHERING:
-        print("Dithering: ENABLED (better for screentones/gradients)")
+        print("Dithering: ENABLED (better for screentones/gradients, use --no-dither to enable)")
     else:
-        print("Dithering: DISABLED (use --dither to enable)")
+        print("Dithering: DISABLED")
     
     # Determine number of threads
     max_workers = min(4, os.cpu_count() or 1)  # Use up to 4 threads
