@@ -919,6 +919,7 @@ def main():
                 print(f"State of {what_changed} modified for page {metadata_obj.page_num} display.")
             replace_canvas = metadata_obj.canvas_reference
             replace_img = metadata_obj.photo_reference
+            segshow_img = metadata_obj.image_reference.convert('L')  # will be used to show the chunks on rollover.
             if replace_canvas:
                 if scroll_frame_ref.g_previewTK.get():
                     # This will be a "show with approximate contrast" setting.
@@ -936,6 +937,7 @@ def main():
                         # dither_img = dither_img.resize((metadata_obj.width*2, metadata_obj.height*2), Image.Resampling.LANCZOS) 
                         dither_img = contrast_boost_image(dither_img, need_boost=True, contrast_values=f"{darkval},{lightval}", page_num = page_index + 1)
                         dither_img = dither_img.convert('1', dither=Image.Dither.FLOYDSTEINBERG)
+                        segshow_img = contrast_boost_image(segshow_img, need_boost=True, contrast_values=f"{darkval},{lightval}", page_num = page_index + 1)
                         # dither_img = dither_img.convert('L')
                         # dither_img = dither_img.resize((metadata_obj.width, metadata_obj.height), Image.Resampling.LANCZOS) 
                         replace_img = ImageTk.PhotoImage(dither_img)
@@ -961,6 +963,7 @@ def main():
             if replace_canvas:
                 # so long as it's not None, which which would mean it's currently undisplayed due to pagination.
                 overlay_img = Image.new('RGBA', (width, height), color=(0, 0, 0, 0))
+                rollover_img = Image.new('LA', (width, height), color=(0,224))
                 draw = ImageDraw.Draw(overlay_img)
                 # margin display
                 if True and not metadata_obj.dont_splitTK.get() and not metadata_obj.split_spreadsTK.get(): 
@@ -983,15 +986,22 @@ def main():
                     draw.rectangle((hcenter-3,0,hcenter+3,height), fill=(50,50,50,255))
 
 
-                if not metadata_obj.dont_splitTK.get():
+                if not metadata_obj.dont_splitTK.get() and scroll_frame_ref.g_overlapTK.get():
                     # we need to show how it will be split up. (for now not worrying about special splits or split spreads or max width (yet))
-                    number_of_h_segments = SET_H_OVERLAP_SEGMENTS
-                    h_overlap_percent = SET_H_OVERLAP_PERCENT
+                    number_of_h_segments = 1
+                    if (scroll_frame_ref.g_hsplitTargetTK.get()):
+                        number_of_h_segments = int(scroll_frame_ref.g_hsplitTargetTK.get())
+                    h_overlap_percent = 45
+                    if (scroll_frame_ref.g_hsplitOverlapTK.get()):
+                        h_overlap_percent = int(scroll_frame_ref.g_hsplitOverlapTK.get())
+                    hsplit_max_width = MAX_SPLIT_WIDTH
+                    if (scroll_frame_ref.g_hsplitMaxWidthTK.get()):
+                        hsplit_max_width = int(scroll_frame_ref.g_hsplitMaxWidthTK.get())
                     if metadata_obj.split_spreadsTK.get():
                         width = width // 2
                         top = int(height * float(margin_top.get()) / 100.0)
                         bottom = height - int(height * float(margin_bottom.get()) / 100.0)
-                        left = int(width * float(margin_left.get()) * 2 / 100.0) # doubled because of halfing
+                        left = int(width * float(margin_left.get()) * 2 / 100.0) # doubled because of halving
                         right = width - 5; #leave room for center split bar. 
                     else:
                         top = int(height * float(margin_top.get()) / 100.0)
@@ -999,7 +1009,7 @@ def main():
                         left = int(width * float(margin_left.get()) / 100.0)
                         right = width - int(width * float(margin_right.get()) / 100.0)
                     cropped_width = right - left
-                    local_max_width = int(MAX_SPLIT_WIDTH / 800.0 * cropped_width)
+                    local_max_width = int(hsplit_max_width / 800.0 * cropped_width)
                     # if SPECIAL_SPLITS and page_num in SPECIAL_SPLIT_PAGES:
                     #     special_split_pos = SPECIAL_SPLIT_PAGES.index(page_num)
                     #     number_of_h_segments = SPECIAL_SPLIT_HSPLITS[special_split_pos]
@@ -1018,8 +1028,13 @@ def main():
                     if number_of_h_segments > 1:
                         shiftover_to_overlap = overlapping_width - (overlapping_width * number_of_h_segments - cropped_width) // (number_of_h_segments - 1)
                     # print("shiftover_to_overlap:", shiftover_to_overlap)
-                    number_of_v_segments = DESIRED_V_OVERLAP_SEGMENTS - 1
-                    minimum_v_overlap = MINIMUM_V_OVERLAP_PERCENT
+                    number_of_v_segments = 2
+                    if (scroll_frame_ref.g_vsplitTargetTK.get()):
+                        number_of_v_segments = int(scroll_frame_ref.g_vsplitTargetTK.get()) - 1
+                    minimum_v_overlap = 5
+                    if (scroll_frame_ref.g_vsplitMinOverlapTK.get()):
+                        minimum_v_overlap = int(scroll_frame_ref.g_vsplitMinOverlapTK.get())
+
                     # if SPECIAL_SPLITS and page_num in SPECIAL_SPLIT_PAGES:
                     #     special_split_pos = SPECIAL_SPLIT_PAGES.index(page_num)
                     #     number_of_v_segments = SPECIAL_SPLIT_VSPLITS[special_split_pos]-1
@@ -1061,6 +1076,17 @@ def main():
                     overlay_img2 = Image.new('RGBA', (width, height), color=(0, 0, 0, 0))
                     draw2 = ImageDraw.Draw(overlay_img2)
 
+                    # how much space would it take to show all the slices side by side.
+                    segshow_req_width = (cropped_width-(shiftover_to_overlap*(number_of_h_segments-1))) * number_of_h_segments + 20 * (number_of_h_segments-1) + 30
+                    segshow_req_height = (cropped_height-(shiftdown_to_overlap*(number_of_v_segments-1))) * number_of_v_segments + 20 * (number_of_v_segments-1) + 30
+                    # how much would we need to scale it down to show that
+                    segshow_hscale = width * 1.0 / segshow_req_width
+                    segshow_scale = height * 1.0 / segshow_req_height
+                    # use the smaller of the two.
+                    if segshow_scale > segshow_hscale:
+                        segshow_scale = segshow_hscale
+                    # segshowdraw = ImageDraw.Draw(rollover_img)
+
                     while v < number_of_v_segments:
                         # print("v:", v)
                         h = 0
@@ -1068,7 +1094,7 @@ def main():
                             # segment = img.crop((shiftover_to_overlap*h, shiftdown_to_overlap*v, width-(shiftover_to_overlap*(number_of_h_segments-h-1)), height-(shiftdown_to_overlap*(number_of_v_segments-v-1))))
                             # draw.rectangle((shiftover_to_overlap*h+left+(v+1)*3, shiftdown_to_overlap*v+top+(v+1)*2, cropped_width-(shiftover_to_overlap*(number_of_h_segments-h-1))+left+(v+1)*3, cropped_height-(shiftdown_to_overlap*(number_of_v_segments-v-1))+top+(v+1)*3), outline=(0,0,0,160), width=4)
 
-                            if v > 0 and scroll_frame_ref.g_shadedTK.get():
+                            if v > 0 and scroll_frame_ref.g_shadedTK.get() and overlapping_height - shiftdown_to_overlap > 0:
                                 draw.rectangle((shiftover_to_overlap*h+left, shiftdown_to_overlap*v+top, cropped_width-(shiftover_to_overlap*(number_of_h_segments-h-1))+left, shiftdown_to_overlap*v+top+(overlapping_height - shiftdown_to_overlap)), fill=(96,96,127,150))
                             
                             if h > 0 and scroll_frame_ref.g_shadedTK.get():
@@ -1081,9 +1107,22 @@ def main():
                                 draw.rectangle((shiftover_to_overlap*h+left+v*1-1, shiftdown_to_overlap*v+top-1, cropped_width-(shiftover_to_overlap*(number_of_h_segments-h-1))+left+v*1+1, cropped_height-(shiftdown_to_overlap*(number_of_v_segments-v-1))+top+1), outline=(255,255,255,255), width=7)
                                 draw.rectangle((shiftover_to_overlap*h+left+v*1+1, shiftdown_to_overlap*v+top+1, cropped_width-(shiftover_to_overlap*(number_of_h_segments-h-1))+left+v*1-1, cropped_height-(shiftdown_to_overlap*(number_of_v_segments-v-1))+top-1), outline=(255,0,0,255), width=3)                            # if number_of_h_segments > 1:
                            
+                            if segshow_img:
+                                segshow_crop_img = segshow_img.crop((shiftover_to_overlap*h+left, shiftdown_to_overlap*v+top, cropped_width-(shiftover_to_overlap*(number_of_h_segments-h-1))+left, cropped_height-(shiftdown_to_overlap*(number_of_v_segments-v-1))+top))
+                                segshow_chunk_width = int(segshow_crop_img.size[0] * segshow_scale)
+                                segshow_chunk_height = int(segshow_crop_img.size[1] * segshow_scale)
+                                segshow_hcentering = (width - (segshow_chunk_width * number_of_h_segments + 20 * (number_of_h_segments-1))) // 2
+                                segshow_vcentering = (height - (segshow_chunk_height * number_of_v_segments + 20 * (number_of_v_segments-1))) // 2
+                                segshow_crop_img = segshow_crop_img.resize((segshow_chunk_width, segshow_chunk_height), Image.Resampling.LANCZOS)
+                                # segshow_crop_img = segshow_crop_img.convert('1', dither=Image.Dither.FLOYDSTEINBERG)
+                                segshow_crop_img = segshow_crop_img.convert('L')
+                                rollover_img.paste(segshow_crop_img,((20+segshow_chunk_width)*h+segshow_hcentering, (20+segshow_chunk_height)*v+segshow_vcentering))
+                                # crop_area = (0, 0, 200, 200) 
+                                # cropped_img = original_img.crop(crop_area)
+
                             if metadata_obj.split_spreadsTK.get():
                                 local_left = width + 5
-                                if v > 0 and scroll_frame_ref.g_shadedTK.get():
+                                if v > 0 and scroll_frame_ref.g_shadedTK.get() and overlapping_height - shiftdown_to_overlap > 0:
                                     draw.rectangle((shiftover_to_overlap*h+local_left, shiftdown_to_overlap*v+top, cropped_width-(shiftover_to_overlap*(number_of_h_segments-h-1))+local_left, shiftdown_to_overlap*v+top+(overlapping_height - shiftdown_to_overlap)), fill=(96,96,127,150))
                                 
                                 if h > 0 and scroll_frame_ref.g_shadedTK.get():
@@ -1126,7 +1165,30 @@ def main():
 
                 over_photo = ImageTk.PhotoImage(overlay_img)
                 metadata_obj.overlay_reference = over_photo # Store reference
-                replace_canvas.create_image(0, 0, image=over_photo, anchor='nw')
+                replace_canvas.create_image(0, 0, image=over_photo, anchor='nw', tags="my_overlay_"+str(page_index))
+
+                rollover_photo = ImageTk.PhotoImage(rollover_img)
+                metadata_obj.rollover_reference = rollover_photo
+                metadata_obj.canvas_reference = replace_canvas
+
+                def on_enter(event):
+                    canvas = event.widget
+                    page_index = int(canvas.gettags("current")[0].split('_overlay_')[1])
+                    # print("on enter for", page_index)
+                    metadata_obj = SCROLL_FRAME_REF.page_metadata[page_index]
+                    metadata_obj.rollover_to_delete = metadata_obj.canvas_reference.create_image(0, 0, image=metadata_obj.rollover_reference, anchor='nw', tags="my2_overlay_"+str(page_index))
+                    metadata_obj.canvas_reference.tag_bind("my2_overlay_"+str(page_index), "<Leave>", on_leave)
+
+                def on_leave(event):
+                    canvas = event.widget
+                    page_index = int(canvas.gettags("current")[0].split('_overlay_')[1])
+                    # print("on leave for", page_index)
+                    metadata_obj = SCROLL_FRAME_REF.page_metadata[page_index]
+                    metadata_obj.canvas_reference.delete(metadata_obj.rollover_to_delete)
+
+                replace_canvas.tag_bind("my_overlay_"+str(page_index), "<Enter>", on_enter)
+                # replace_canvas.tag_bind("my_overlay_"+str(page_index), "<Leave>", on_leave)
+
 
         def modify_list_in_option(starting_string, number_to_mod, add_it):
             string_to_mod = str(number_to_mod)
@@ -1190,6 +1252,34 @@ def main():
                 if what_changed == "padblack" and split_values[find_index] == "pad-black":
                     found_it = True
                     split_values[find_index] = ""
+                if what_changed == "margin" and (split_values[find_index].startswith("margin") or split_values[find_index].startswith("margins")):
+                    found_it = True
+                    margin_values = []
+                    margin_values.append(margin_leftTK.get())
+                    margin_values.append(margin_topTK.get())
+                    margin_values.append(margin_rightTK.get())
+                    margin_values.append(margin_bottomTK.get())
+                    margin_values_str = "???"
+                    if margin_values[1] != "" or margin_values[2] != "" or margin_values[3] != "":
+                        margin_values_str = "margin " + ",".join(margin_values)
+                    elif margin_values[0] == "":
+                        margin_values_str = ""
+                    else:
+                        margin_values_str = "margin " + margin_values[0]
+                    split_values[find_index] = margin_values_str
+                if what_changed == "contrast" and split_values[find_index].startswith("contrast"):
+                    found_it = True
+                    contrast_values = []
+                    contrast_values.append(scroll_frame_ref.contrast_dark_input.get())
+                    contrast_values.append(scroll_frame_ref.contrast_light_input.get())
+                    contrast_values_str = "???"
+                    if contrast_values[1] != "":
+                        contrast_values_str = "contrast-boost " + ",".join(contrast_values)
+                    elif contrast_values[0] == "":
+                        contrast_values_str = ""
+                    else:
+                        contrast_values_str = "contrast-boost " + contrast_values[0]
+                    split_values[find_index] = contrast_values_str
                 find_index += 1
             if found_it:
                 # is it now blank? remove emptys from list.
@@ -1214,12 +1304,61 @@ def main():
                     split_values.append("manga")
                 if what_changed == "padblack" and scroll_frame_ref.g_padBlackTK.get():
                     split_values.append("pad-black")
+                if what_changed == "margin":
+                    margin_values = []
+                    margin_values.append(margin_leftTK.get())
+                    margin_values.append(margin_topTK.get())
+                    margin_values.append(margin_rightTK.get())
+                    margin_values.append(margin_bottomTK.get())
+                    margin_values_str = "???"
+                    if margin_values[1] != "" or margin_values[2] != "" or margin_values[3] != "":
+                        margin_values_str = "margin " + ",".join(margin_values)
+                    elif margin_values[0] == "":
+                        margin_values_str = ""
+                    else:
+                        margin_values_str = "margin " + margin_values[0]
+                    split_values.append(margin_values_str)
+                if what_changed == "contrast":
+                    contrast_values = []
+                    contrast_values.append(scroll_frame_ref.contrast_dark_input.get())
+                    contrast_values.append(scroll_frame_ref.contrast_light_input.get())
+                    contrast_values_str = "???"
+                    if contrast_values[1] != "":
+                        contrast_values_str = "contrast-boost " + ",".join(contrast_values)
+                    elif contrast_values[0] == "":
+                        contrast_values_str = ""
+                    else:
+                        contrast_values_str = "contrast-boost " + contrast_values[0]
+                    split_values.append(contrast_values_str)
             new_value = " --".join(split_values)
             options_box.delete("1.0", tk.END)
             options_box.insert("1.0", new_value)
 
         def parse_options(scroll_frame_ref):
             current_options = options_box.get("1.0","end-1c")
+            # if check_for == "margin":
+            #     # margin entry boxes changed, we have to update the options string.
+            #     margin_values = []
+            #     margin_values.append(margin_leftTK.get())
+            #     margin_values.append(margin_topTK.get())
+            #     margin_values.append(margin_rightTK.get())
+            #     margin_values.append(margin_bottomTK.get())
+            #     margin_values_str = "auto"
+            #     if margin_values[1] != "":
+            #         print("looking for margin changes:", margin_values)
+            #         margin_values_str = ",".join(margin_values)
+            #         print("margin_values_str:", margin_values_str)
+            #     if "--margins " in current_options:
+            #         split_at_margins = current_options.split("--margins ")
+            #         split_second_part = split_at_margins[1].split(" --")
+            #         if "--" not in split_second_part[0]:
+            #             split_second_part[0] = margin_values_str
+            #             current_options = split_at_margins[0] + "--margins " + " --".join(split_second_part)
+            #             print("new current_options:", current_options)
+            #     else:
+            #         current_options = current_options + " --margins " + margin_values_str
+            # elif check_for =="contrast":
+            #     contrast_values = ""
             split_values = current_options.split(" --")
             split_previous = scroll_frame_ref.previous_options.split(" --")
             update_overlay_list = []
@@ -1266,20 +1405,20 @@ def main():
                         margin_list = val.split(' ')[1].split(',')
                         # print("margins changed",margin_list)
                         if len(margin_list) == 1 and margin_list[0] == "0":
-                            margin_left.set("")
+                            margin_left.set("0")
                             margin_top.set("")
                             margin_right.set("")
                             margin_bottom.set("")
                         if len(margin_list) == 1 and margin_list[0] == "auto":
                             margin_left.set("auto")
-                            margin_top.set("auto")
-                            margin_right.set("auto")
-                            margin_bottom.set("auto")
+                            margin_top.set("")
+                            margin_right.set("")
+                            margin_bottom.set("")
                         elif len(margin_list) == 1:
                             margin_left.set(margin_list[0])
-                            margin_top.set(margin_list[0])
-                            margin_right.set(margin_list[0])
-                            margin_bottom.set(margin_list[0])
+                            margin_top.set("")
+                            margin_right.set("")
+                            margin_bottom.set("")
                         else:
                             margin_list.append("0")
                             margin_list.append("0")
@@ -1320,9 +1459,23 @@ def main():
             # Callback function that runs on every key release.
             # The event object has a .widget attribute that refers to the triggering widget
             # current_text = event.widget.get("1.0","end-1c")
-            # print("Text field content:", current_text)
+            # print("keystroke,", event.widget.get())
             parse_options(SCROLL_FRAME_REF)
             # You can add your function logic here
+
+        def on_key_release_margin(event):
+            print("margin keystroke,", event.widget.get())
+            refresh_options(-1, "margin", SCROLL_FRAME_REF)
+            parse_options(SCROLL_FRAME_REF) # ,check_for="margin")
+
+        def on_key_release_contrast(event):
+            refresh_options(-1, "contrast", SCROLL_FRAME_REF)
+            parse_options(SCROLL_FRAME_REF) # ,check_for="contrast")
+
+        def on_key_release_segmentation(event):
+            print("segmentation keystroke,", event.widget.get())
+            refresh_options(-1, "segmentation", SCROLL_FRAME_REF)
+            parse_options(SCROLL_FRAME_REF)
 
         class PageMetadata:
             # A class attribute (shared by all instances)
@@ -1337,7 +1490,9 @@ def main():
             prd_light_contrast_used = "-1"
             overlay_reference = None
             overlay_reference2 = None  # used rarely, for horizontal split overlay at this time.
+            rollover_reference = None 
             canvas_reference = None
+            rollover_to_delete = None
             width = -1
             height = -1
 
@@ -1377,7 +1532,15 @@ def main():
                 self.g_padBlackTK = None # tk.IntVar(value=0)
                 self.contrast_dark_input = tk.StringVar(value="")
                 self.contrast_light_input = tk.StringVar(value="")
-                # print(self.g_overlapTK.get())
+                self.g_vsplitTargetTK = tk.StringVar(value="")
+                self.g_vsplitMinOverlapTK = tk.StringVar(value="")
+                self.g_hsplitTargetTK = tk.StringVar(value="")
+                self.g_hsplitOverlapTK = tk.StringVar(value="")
+                self.g_hsplitMaxWidthTK = tk.StringVar(value="")
+                ## more set below
+                # g_shadedTK
+                # g_outlinedTK
+                # g_segmentation_controls
 
                 # 1. Create a Canvas and a Scrollbar
                 self.canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
@@ -1452,7 +1615,14 @@ def main():
 
                 def overlap_clicked():
                     print("overlap clicked")
+                    if self.g_overlapTK.get():
+                        #turning it on, show the grid frame of controls.
+                        self.g_segmentation_controls.grid(row=2,column=0,columnspan=GUI_COLUMNS*2,pady=0)
+                    else:
+                        self.g_segmentation_controls.grid_remove()
                     refresh_options(-1, "overlap", self)
+                    for metadata_obj in self.page_metadata:
+                        refresh_page_canvas(metadata_obj.page_index, "outlined", self)
 
                 def overviews_clicked():
                     print("overviews clicked")
@@ -1532,23 +1702,58 @@ def main():
                 checkbox_g5.pack(side=tk.LEFT, anchor="w")
 
                 top_scroll_controls_frame3 = tk.Frame(scroll_frame)
-                top_scroll_controls_frame3.grid(row=2,column=0,columnspan=GUI_COLUMNS*2,pady=0)
+                self.g_segmentation_controls = top_scroll_controls_frame3
                 segmentation_label = tk.Label(top_scroll_controls_frame3, text="Segmentation:")
                 segmentation_label.pack(side=tk.LEFT, anchor="w")
 
+                vsplit_target_label = tk.Label(top_scroll_controls_frame3, text="Rows (minimum)")
+                vsplit_target_label.pack(side=tk.LEFT, anchor="w")
+                vsplitTargetTK = tk.Entry(top_scroll_controls_frame3, textvariable=self.g_vsplitTargetTK, width=2)
+                vsplitTargetTK.pack(side=tk.LEFT, padx=(0, 20))
+                vsplitTargetTK.bind("<KeyRelease>", on_key_release_segmentation)
+
+                vsplit_min_overlap_label = tk.Label(top_scroll_controls_frame3, text="% Row Overlap needed")
+                vsplit_min_overlap_label.pack(side=tk.LEFT, anchor="w")
+                vsplitMinOverlapTK = tk.Entry(top_scroll_controls_frame3, textvariable=self.g_vsplitMinOverlapTK, width=4)
+                vsplitMinOverlapTK.pack(side=tk.LEFT, padx=(0, 20))
+                vsplitMinOverlapTK.bind("<KeyRelease>", on_key_release_segmentation)
+
+                hsplit_target_label = tk.Label(top_scroll_controls_frame3, text="Columns")
+                hsplit_target_label.pack(side=tk.LEFT, anchor="w")
+                hsplitTargetTK = tk.Entry(top_scroll_controls_frame3, textvariable=self.g_hsplitTargetTK, width=2)
+                hsplitTargetTK.pack(side=tk.LEFT, padx=(0, 20))
+                hsplitTargetTK.bind("<KeyRelease>", on_key_release_segmentation)
+
+                hsplit_overlap_label = tk.Label(top_scroll_controls_frame3, text="% Column Overlap")
+                hsplit_overlap_label.pack(side=tk.LEFT, anchor="w")
+                hsplitOverlapTK = tk.Entry(top_scroll_controls_frame3, textvariable=self.g_hsplitOverlapTK, width=4)
+                hsplitOverlapTK.pack(side=tk.LEFT, padx=(0, 20))
+                hsplitOverlapTK.bind("<KeyRelease>", on_key_release_segmentation)
+
+                hsplit_max_width_label = tk.Label(top_scroll_controls_frame3, text="Max Column Width (px)")
+                hsplit_max_width_label.pack(side=tk.LEFT, anchor="w")
+                hsplitMaxWidthTK = tk.Entry(top_scroll_controls_frame3, textvariable=self.g_hsplitMaxWidthTK, width=4)
+                hsplitMaxWidthTK.pack(side=tk.LEFT, padx=(0, 20))
+                hsplitMaxWidthTK.bind("<KeyRelease>", on_key_release_segmentation)
+
                 self.g_outlinedTK = tk.IntVar(value=0)
                 checkbox_g5 = tk.Checkbutton(top_scroll_controls_frame3, 
-                    text="Show Borders",
+                    text="Preview Borders",
                     variable=self.g_outlinedTK,  # Link the variable to the checkbox
                     command=outlined_clicked)     # Call a function when clicked
                 checkbox_g5.pack(side=tk.LEFT, anchor="w")
 
                 self.g_shadedTK = tk.IntVar(value=1)
                 checkbox_g6 = tk.Checkbutton(top_scroll_controls_frame3, 
-                    text="Shade Overlap Regions",
+                    text="Preview Overlap Regions",
                     variable=self.g_shadedTK,  # Link the variable to the checkbox
                     command=shaded_clicked)     # Call a function when clicked
                 checkbox_g6.pack(side=tk.LEFT, anchor="w")
+
+                if OVERLAP:
+                    # it's on, show it.
+                    top_scroll_controls_frame3.grid(row=2,column=0,columnspan=GUI_COLUMNS*2,pady=0)
+
 
                 top_scroll_controls_frame4 = tk.Frame(scroll_frame)
                 top_scroll_controls_frame4.grid(row=3,column=0,columnspan=GUI_COLUMNS*2,pady=0)
@@ -1558,15 +1763,17 @@ def main():
                 contrast_dark_label = tk.Label(top_scroll_controls_frame4, text="Darker Darks")
                 contrast_dark_label.pack(side=tk.LEFT, anchor="w")
                 # scroll_frame.contrast_dark_input = tk.StringVar(value="");
-                contrast_dark_TK = tk.Entry(top_scroll_controls_frame4, textvariable=self.contrast_dark_input, width=4)
+                contrast_dark_TK = tk.Entry(top_scroll_controls_frame4, textvariable=self.contrast_dark_input, width=2)
                 contrast_dark_TK.pack(side=tk.LEFT, padx=(0, 20))
+                contrast_dark_TK.bind("<KeyRelease>", on_key_release_contrast)
                 contrast_light_label = tk.Label(top_scroll_controls_frame4, text="Lighter Lights")
                 contrast_light_label.pack(side=tk.LEFT, anchor="w")
                 # scroll_frame.contrast_light_input = tk.StringVar(value="");
-                contrast_light_TK = tk.Entry(top_scroll_controls_frame4, textvariable=self.contrast_light_input, width=4)
+                contrast_light_TK = tk.Entry(top_scroll_controls_frame4, textvariable=self.contrast_light_input, width=2)
                 contrast_light_TK.pack(side=tk.LEFT, padx=(0, 20))
+                contrast_light_TK.bind("<KeyRelease>", on_key_release_contrast)
 
-                self.g_previewTK = tk.IntVar(value=1)
+                self.g_previewTK = tk.IntVar(value=0)
                 checkbox_g5 = tk.Checkbutton(top_scroll_controls_frame4, 
                     text="Preview Approximate Contrast",
                     variable=self.g_previewTK,  # Link the variable to the checkbox
@@ -1710,11 +1917,16 @@ def main():
 
         root.protocol("WM_DELETE_WINDOW", on_closing)
 
-        def on_update_click():
+        def on_auto_click():
             """This function runs when the button is clicked."""
             print("Button was clicked! This code runs inside the event loop.")
             # You can interact with other widgets here, e.g., update a label.
             # label.config(text=STRING_ARGS)
+            margin_left.set("auto")
+            margin_top.set("")
+            margin_right.set("")
+            margin_bottom.set("")
+            refresh_options(-1, "margin", SCROLL_FRAME_REF)
             for metadata_obj in scroll_frame.page_metadata:
                 # print(metadata_obj.page_num)
                 refresh_page_canvas(metadata_obj.page_index, "marginrefresh", SCROLL_FRAME_REF)
@@ -1773,24 +1985,28 @@ def main():
         margin_top = tk.StringVar(value="4.0");
         margin_topTK = tk.Entry(margin_frame1, textvariable=margin_top, width=4)
         margin_topTK.pack()
+        margin_topTK.bind("<KeyRelease>", on_key_release_margin)
 
         margin_frame2 = tk.Frame(top_control_frame)
         margin_frame2.pack()
         margin_left = tk.StringVar(value="2.0");
         margin_leftTK = tk.Entry(margin_frame2, textvariable=margin_left, width=4)
         margin_leftTK.pack(side=tk.LEFT)
+        margin_leftTK.bind("<KeyRelease>", on_key_release_margin)
         margin_right = tk.StringVar(value="2.0");
         margin_rightTK = tk.Entry(margin_frame2, textvariable=margin_right, width=4)
         margin_rightTK.pack(side=tk.RIGHT)
+        margin_rightTK.bind("<KeyRelease>", on_key_release_margin)
 
         margin_frame3 = tk.Frame(top_control_frame)
         margin_frame3.pack()
         margin_bottom = tk.StringVar(value="4.0")
         margin_bottomTK = tk.Entry(margin_frame3, textvariable=margin_bottom, width=4)
         margin_bottomTK.pack()
+        margin_bottomTK.bind("<KeyRelease>", on_key_release_margin)
 
         # The 'command' attribute links the button click event to the on_button_click function
-        button = tk.Button(top_control_frame, text="Update", command=on_update_click)
+        button = tk.Button(top_control_frame, text="Auto", command=on_auto_click)
         button.pack()
 
 
