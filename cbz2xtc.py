@@ -915,20 +915,30 @@ def main():
             # "commandline"
             metadata_obj = scroll_frame_ref.page_metadata[page_index]
             if page_index < 3 or (not what_changed == "initial" and not what_changed == "marginrefresh" and not what_changed == "pagination"
-                and not what_changed == "outlined" and not what_changed == "shaded" and not what_changed == "preview" and not what_changed == "contrastrefresh"):
+                and not what_changed == "outlined" and not what_changed == "shaded" and not what_changed == "preview" and not what_changed == "contrastrefresh"
+                and not what_changed == "hardwarepreviewsinit" and not what_changed == "firstdisplay"):
                 print(f"State of {what_changed} modified for page {metadata_obj.page_num} display.")
             replace_canvas = metadata_obj.canvas_reference
             replace_img = metadata_obj.photo_reference
-            segshow_img = metadata_obj.image_reference.convert('L')  # will be used to show the chunks on rollover.
+            segshow_img = metadata_obj.image_reference.convert('L')  # will be used to show the chunks on rollover and for hardware previews.
+            darkval = scroll_frame_ref.contrast_dark_input.get()
+            lightval = scroll_frame_ref.contrast_light_input.get()
+            if darkval == "":
+                darkval = "0"
+            if lightval == "":
+                lightval = darkval
             if replace_canvas:
+                segshow_img = contrast_boost_image(segshow_img, need_boost=True, contrast_values=f"{darkval},{lightval}", page_num = page_index + 1)
                 if scroll_frame_ref.g_previewTK.get():
+
+                    # this block of code tried to preserve the dither "feel" for the segmentation previews but wasn't worth the performance hit. 
+                    # doubwidth, doubheight = segshow_img.size
+                    # segshow_img = segshow_img.resize((doubwidth*2, doubheight*2), Image.Resampling.LANCZOS) 
+                    # segshow_img = segshow_img.convert('1', dither=Image.Dither.FLOYDSTEINBERG)
+                    # segshow_img = segshow_img.convert('L')
+                    # segshow_img = segshow_img.resize((doubwidth, doubheight), Image.Resampling.LANCZOS) 
+
                     # This will be a "show with approximate contrast" setting.
-                    darkval = scroll_frame_ref.contrast_dark_input.get()
-                    lightval = scroll_frame_ref.contrast_light_input.get()
-                    if darkval == "":
-                        darkval = "0"
-                    if lightval == "":
-                        lightval = darkval
                     if metadata_obj.photo_reference_dithered and metadata_obj.prd_dark_contrast_used == darkval and metadata_obj.prd_light_contrast_used == lightval:
                         # it's what we used before, use it again.
                         replace_img = metadata_obj.photo_reference_dithered
@@ -937,7 +947,6 @@ def main():
                         # dither_img = dither_img.resize((metadata_obj.width*2, metadata_obj.height*2), Image.Resampling.LANCZOS) 
                         dither_img = contrast_boost_image(dither_img, need_boost=True, contrast_values=f"{darkval},{lightval}", page_num = page_index + 1)
                         dither_img = dither_img.convert('1', dither=Image.Dither.FLOYDSTEINBERG)
-                        segshow_img = contrast_boost_image(segshow_img, need_boost=True, contrast_values=f"{darkval},{lightval}", page_num = page_index + 1)
                         # dither_img = dither_img.convert('L')
                         # dither_img = dither_img.resize((metadata_obj.width, metadata_obj.height), Image.Resampling.LANCZOS) 
                         replace_img = ImageTk.PhotoImage(dither_img)
@@ -985,6 +994,36 @@ def main():
                     hcenter = width // 2
                     draw.rectangle((hcenter-3,0,hcenter+3,height), fill=(50,50,50,255))
 
+                # if what_changed == "initial" and "--overlap" in sys.argv:
+                #     # special cases for initial setup. we're jumping the gun a bit on setting this stuff. 
+                #     scroll_frame_ref.g_overlapTK.set(value=1)
+                scroll_frame_ref.hardware_preview_images[metadata_obj.page_num] = []  # clear previous previews.
+
+                # print("--select-overviews present:","--select-overviews" in options_box.get("1.0","end-1c"))
+                # print("scroll_frame_ref.g_overviewsTK.get():", scroll_frame_ref.g_overviewsTK.get())
+                we_need_hardware_preview_overview = not "--select-overviews" in options_box.get("1.0","end-1c") and scroll_frame_ref.g_overviewsTK.get()
+                if not what_changed=="initial" and (metadata_obj.dont_splitTK.get() or metadata_obj.select_overviewsTK.get() 
+                or we_need_hardware_preview_overview):
+                    # We either not splitting this page, or we're doing a selective overview, or we're doing overviews for everything.
+                    do_it_sideways = scroll_frame_ref.g_sidewaysTK.get()
+                    # either way, we're putting in an overview of the whole page.
+                    hws_overview_img = None
+                    if do_it_sideways:
+                        hws_overview_img = segshow_img.rotate(90, expand=True)
+                    else:
+                        hws_overview_img = segshow_img
+                    if we_need_hardware_preview_overview or metadata_obj.dont_splitTK.get() or metadata_obj.select_overviewsTK.get():
+                        # this needs to be in the hardware preview.
+                        hws_v_scale = 480.0 / hws_overview_img.size[1]
+                        hws_width = int(hws_v_scale * hws_overview_img.size[0] / 2)
+                        if hws_width > 396:
+                            hws_width = 400
+                        hws_img = hws_overview_img.resize((hws_width, 240), Image.Resampling.LANCZOS)
+                        scroll_frame_ref.hardware_preview_images[metadata_obj.page_num].append(ImageTk.PhotoImage(hws_img))
+                        if metadata_obj.dont_splitTK.get():
+                            # this is a don't split and we need to think about the rollover, let's paste in the overview.
+                            dontsplit_centering_w, dontsplit_centering_h = hws_img.size
+                            rollover_img.paste(hws_img, ((width-dontsplit_centering_w)//2,(height-dontsplit_centering_h)//2))
 
                 if not metadata_obj.dont_splitTK.get() and scroll_frame_ref.g_overlapTK.get():
                     # we need to show how it will be split up. (for now not worrying about special splits or split spreads or max width (yet))
@@ -1077,11 +1116,11 @@ def main():
                     draw2 = ImageDraw.Draw(overlay_img2)
 
                     # how much space would it take to show all the slices side by side.
-                    segshow_req_width = (cropped_width-(shiftover_to_overlap*(number_of_h_segments-1))) * number_of_h_segments + 20 * (number_of_h_segments-1) + 30
-                    segshow_req_height = (cropped_height-(shiftdown_to_overlap*(number_of_v_segments-1))) * number_of_v_segments + 20 * (number_of_v_segments-1) + 30
+                    segshow_req_width = (cropped_width-(shiftover_to_overlap*(number_of_h_segments-1))) * number_of_h_segments
+                    segshow_req_height = (cropped_height-(shiftdown_to_overlap*(number_of_v_segments-1))) * number_of_v_segments
                     # how much would we need to scale it down to show that
-                    segshow_hscale = width * 1.0 / segshow_req_width
-                    segshow_scale = height * 1.0 / segshow_req_height
+                    segshow_hscale = (width - 20 - (20*(number_of_h_segments-1))) * 1.0 / segshow_req_width
+                    segshow_scale = (height - 20 - (20*(number_of_v_segments-1))) * 1.0 / segshow_req_height
                     # use the smaller of the two.
                     if segshow_scale > segshow_hscale:
                         segshow_scale = segshow_hscale
@@ -1109,10 +1148,18 @@ def main():
                            
                             if segshow_img:
                                 segshow_crop_img = segshow_img.crop((shiftover_to_overlap*h+left, shiftdown_to_overlap*v+top, cropped_width-(shiftover_to_overlap*(number_of_h_segments-h-1))+left, cropped_height-(shiftdown_to_overlap*(number_of_v_segments-v-1))+top))
+                                if not what_changed == "initial":
+                                    # too soon, we don't know enough to do this correctly.
+                                    hws_v_scale = 480.0 / segshow_crop_img.size[1]
+                                    hws_width = int(hws_v_scale * segshow_crop_img.size[0] / 2)
+                                    if hws_width > 396:
+                                        hws_width = 400
+                                    hws_img = segshow_crop_img.resize((hws_width, 240), Image.Resampling.LANCZOS)
+                                    scroll_frame_ref.hardware_preview_images[metadata_obj.page_num].append(ImageTk.PhotoImage(hws_img))
                                 segshow_chunk_width = int(segshow_crop_img.size[0] * segshow_scale)
                                 segshow_chunk_height = int(segshow_crop_img.size[1] * segshow_scale)
-                                segshow_hcentering = (width - (segshow_chunk_width * number_of_h_segments + 20 * (number_of_h_segments-1))) // 2
-                                segshow_vcentering = (height - (segshow_chunk_height * number_of_v_segments + 20 * (number_of_v_segments-1))) // 2
+                                segshow_hcentering = (width - (segshow_chunk_width * number_of_h_segments + 20 * (number_of_h_segments-1))) // 2 + 1
+                                segshow_vcentering = (height - (segshow_chunk_height * number_of_v_segments + 20 * (number_of_v_segments-1))) // 2 + 1
                                 segshow_crop_img = segshow_crop_img.resize((segshow_chunk_width, segshow_chunk_height), Image.Resampling.LANCZOS)
                                 # segshow_crop_img = segshow_crop_img.convert('1', dither=Image.Dither.FLOYDSTEINBERG)
                                 segshow_crop_img = segshow_crop_img.convert('L')
@@ -1178,6 +1225,7 @@ def main():
                     metadata_obj = SCROLL_FRAME_REF.page_metadata[page_index]
                     metadata_obj.rollover_to_delete = metadata_obj.canvas_reference.create_image(0, 0, image=metadata_obj.rollover_reference, anchor='nw', tags="my2_overlay_"+str(page_index))
                     metadata_obj.canvas_reference.tag_bind("my2_overlay_"+str(page_index), "<Leave>", on_leave)
+                    metadata_obj.canvas_reference.tag_bind("my2_overlay_"+str(page_index), "<Button-1>", on_overlay_click)
 
                 def on_leave(event):
                     canvas = event.widget
@@ -1185,6 +1233,30 @@ def main():
                     # print("on leave for", page_index)
                     metadata_obj = SCROLL_FRAME_REF.page_metadata[page_index]
                     metadata_obj.canvas_reference.delete(metadata_obj.rollover_to_delete)
+
+                def on_overlay_click(event):
+                    global HARDWARE_PREVIEW_INITIALIZED
+                    global HARDWARE_PREVIEW_PAGE_NUM
+                    global HARDWARE_PREVIEW_PAGE_SEG
+                    canvas = event.widget
+                    what_page = int(canvas.gettags("current")[0].split('_overlay_')[1]) + 1
+                    if not HARDWARE_PREVIEW_INITIALIZED:
+                        for metadata_obj in SCROLL_FRAME_REF.page_metadata:
+                            refresh_page_canvas(metadata_obj.page_index, "hardwarepreviewsinit", SCROLL_FRAME_REF)
+                            HARDWARE_PREVIEW_INITIALIZED = True
+                    HARDWARE_PREVIEW_PAGE_NUM = what_page
+                    HARDWARE_PREVIEW_PAGE_SEG = 0
+                    hardware_image_canvas.delete("all")
+                    hardware_image_canvas.create_image(0,0,image=tk_hardware_photo_array[hardware_image_array_pos],anchor=tk.NW)
+                    available_segments = len(SCROLL_FRAME_REF.hardware_preview_images[what_page])
+                    if available_segments > 0:
+                        if SCROLL_FRAME_REF.g_padBlackTK.get():
+                            hardware_image_canvas.create_image(50,50,image=hardware_padblack_imgtk,anchor=tk.NW)
+                        else:
+                            hardware_image_canvas.create_image(50,50,image=hardware_pad_imgtk,anchor=tk.NW)
+                        what_img = SCROLL_FRAME_REF.hardware_preview_images[HARDWARE_PREVIEW_PAGE_NUM][HARDWARE_PREVIEW_PAGE_SEG]
+                        center_adjust = (400 - what_img.width()) // 2
+                        hardware_image_canvas.create_image(50 + center_adjust,50,image=what_img,anchor=tk.NW)
 
                 replace_canvas.tag_bind("my_overlay_"+str(page_index), "<Enter>", on_enter)
                 # replace_canvas.tag_bind("my_overlay_"+str(page_index), "<Leave>", on_leave)
@@ -1523,6 +1595,7 @@ def main():
                 self.image_paths = image_paths
                 self.page_metadata = []
                 self.canvas_display_and_controls = []
+                self.hardware_preview_images = [[]] # these will be indexed by page number for conveinence, so #0 is an empty list. 
                 self.previous_options = ""
                 # print("init TK variables")
                 self.g_overlapTK = None # tk.IntVar(value=0)
@@ -1572,6 +1645,8 @@ def main():
                 print("images loaded")
                 # print("g_overlapTK:",self.g_overlapTK.get())
                 parse_options(self)
+                for metadata_obj in self.page_metadata:
+                    refresh_page_canvas(metadata_obj.page_index, "firstdisplay", self)
 
             def on_mousewheel(event):
                 # Respond to wheel event
@@ -1801,6 +1876,7 @@ def main():
                         # img = img.convert('1', dither=Image.Dither.FLOYDSTEINBERG)
                         # img = img.convert('L')
                         photo = ImageTk.PhotoImage(img)
+                        self.hardware_preview_images.append([]) # add a list for each page's splits.
                         self.page_metadata.append(PageMetadata(i))
                         metadata_obj = self.page_metadata[i];
                         # Store reference
@@ -1932,6 +2008,7 @@ def main():
                 refresh_page_canvas(metadata_obj.page_index, "marginrefresh", SCROLL_FRAME_REF)
 
         def on_pagination_click(what_page):
+            global CURRENT_SHOWING_PAGE
             num_pages = len(SCROLL_FRAME_REF.page_metadata)
             new_start = what_page * GUI_PAGE_LIMIT
             new_end = (what_page +1) * GUI_PAGE_LIMIT - 1
@@ -1969,10 +2046,137 @@ def main():
                 canvas_obj.select_overviewsTKcb.config(state=tk.DISABLED)
                 canvas_obj.split_spreadsTKcb.config(state=tk.DISABLED)
                 c += 1
+            CURRENT_SHOWING_PAGE = what_page
+
                 
         top_control_frame = tk.Frame(root)
         top_control_frame.pack(side=tk.TOP, fill=tk.X)
-        options_box = tk.Text(top_control_frame, height=10, width=50, font=("Courier", 14, "normal")) 
+
+        # load X4_landscape_400pxScreens
+        hardware_image_array = []
+        hardware_image_array.append(Image.open("gui_resources/X4_landscape_400pxScreen.png"))  # the default
+        hardware_image_array.append(Image.open("gui_resources/X4_landscape_400pxScreen_decor1.png"))  # the default
+        hardware_image_array.append(Image.open("gui_resources/X4_landscape_400pxScreen_white.png"))
+        hardware_image_array.append(Image.open("gui_resources/X4_landscape_400pxScreen_white_decor1.png"))
+        hardware_image_array.append(Image.open("gui_resources/X4_landscape_400pxScreen_white_decor2.png"))
+        # create canvas for preview
+        tk_hardware_photo_array = []
+        for hardware_image in hardware_image_array:
+            tk_hardware_photo_array.append(ImageTk.PhotoImage(hardware_image))
+        # put loaded screen into canvas
+        global hardware_image_array_pos
+        global HARDWARE_PREVIEW_PAGE_NUM
+        global HARDWARE_PREVIEW_PAGE_SEG
+        global HARDWARE_PREVIEW_INITIALIZED
+        global CURRENT_SHOWING_PAGE
+        global hardware_pad_imgtk
+        global hardware_padblack_imgtk
+
+        hardware_padblack_img = Image.new('L', (400, 240), color=0)
+        hardware_padblack_imgtk = ImageTk.PhotoImage(hardware_padblack_img)
+        hardware_pad_img = Image.new('L', (400, 240), color=255)
+        hardware_pad_imgtk = ImageTk.PhotoImage(hardware_pad_img)
+        CURRENT_SHOWING_PAGE = 0
+
+        hardware_image_array_pos = 0
+        HARDWARE_PREVIEW_PAGE_NUM = 0 # start on the hardware bare image.
+        HARDWARE_PREVIEW_PAGE_SEG = 0 # first segment.
+        HARDWARE_PREVIEW_INITIALIZED = False
+        hardware_image_width, hardware_image_height = hardware_image_array[hardware_image_array_pos].size
+        hardware_image_canvas = tk.Canvas(top_control_frame, width=hardware_image_width, height=hardware_image_height)
+        hardware_image_canvas.pack(side=tk.LEFT, anchor=tk.NW)
+        hardware_image_canvas.create_image(0,0,image=tk_hardware_photo_array[hardware_image_array_pos],anchor=tk.NW)
+
+        def on_hardware_canvas_click(event):
+            global HARDWARE_PREVIEW_PAGE_NUM
+            global HARDWARE_PREVIEW_PAGE_SEG
+            global HARDWARE_PREVIEW_INITIALIZED
+            global CURRENT_SHOWING_PAGE
+            # print("number of previews concepted:", len(SCROLL_FRAME_REF.hardware_preview_images))
+            howManyPages = len(SCROLL_FRAME_REF.page_metadata) // GUI_PAGE_LIMIT # dealing with pagination for long comics.
+            whatPageAreWeOn = (HARDWARE_PREVIEW_PAGE_NUM-1) // GUI_PAGE_LIMIT
+            is_skip_page = SCROLL_FRAME_REF.page_metadata[HARDWARE_PREVIEW_PAGE_NUM-1].skipTK.get()
+            if whatPageAreWeOn != CURRENT_SHOWING_PAGE:
+                on_pagination_click(whatPageAreWeOn) # we were on the wrong page, better fix this before we intialize.
+            if not HARDWARE_PREVIEW_INITIALIZED:
+                for metadata_obj in SCROLL_FRAME_REF.page_metadata:
+                    refresh_page_canvas(metadata_obj.page_index, "hardwarepreviewsinit", SCROLL_FRAME_REF)
+                    HARDWARE_PREVIEW_INITIALIZED = True
+            where_width, where_height = hardware_image_array[hardware_image_array_pos].size
+            if event.x < where_width // 2:
+                HARDWARE_PREVIEW_PAGE_SEG -= 1
+                if HARDWARE_PREVIEW_PAGE_SEG < 0 or is_skip_page:
+                    HARDWARE_PREVIEW_PAGE_NUM -= 1
+                    if HARDWARE_PREVIEW_PAGE_NUM < 0:
+                        HARDWARE_PREVIEW_PAGE_NUM = 1
+                    HARDWARE_PREVIEW_PAGE_SEG = len(SCROLL_FRAME_REF.hardware_preview_images[HARDWARE_PREVIEW_PAGE_NUM]) - 1
+            else:
+                HARDWARE_PREVIEW_PAGE_SEG += 1
+                if HARDWARE_PREVIEW_PAGE_SEG >= len(SCROLL_FRAME_REF.hardware_preview_images[HARDWARE_PREVIEW_PAGE_NUM]) or is_skip_page:
+                    HARDWARE_PREVIEW_PAGE_NUM += 1
+                    if HARDWARE_PREVIEW_PAGE_NUM > len(SCROLL_FRAME_REF.page_metadata):
+                        HARDWARE_PREVIEW_PAGE_NUM = len(SCROLL_FRAME_REF.page_metadata)
+                        HARDWARE_PREVIEW_PAGE_SEG = len(SCROLL_FRAME_REF.hardware_preview_images[HARDWARE_PREVIEW_PAGE_NUM]) - 1
+                    else:
+                        HARDWARE_PREVIEW_PAGE_SEG = 0
+            newPage = (HARDWARE_PREVIEW_PAGE_NUM-1) // GUI_PAGE_LIMIT
+            if newPage != whatPageAreWeOn and newPage > -1:
+                on_pagination_click(newPage)  # we switched pages!
+
+            if HARDWARE_PREVIEW_PAGE_SEG < 0:
+                # did we back onto the page? let's check and fix if so.
+                HARDWARE_PREVIEW_PAGE_SEG = len(SCROLL_FRAME_REF.hardware_preview_images[HARDWARE_PREVIEW_PAGE_NUM]) - 1
+                if HARDWARE_PREVIEW_PAGE_SEG < 0:
+                    # nope, there's just nothing here. 
+                    print("page", HARDWARE_PREVIEW_PAGE_NUM, "- no segments to display for this page")
+            # else:
+            #     print("page", HARDWARE_PREVIEW_PAGE_NUM, "segment", HARDWARE_PREVIEW_PAGE_SEG)
+            #scroll_frame_ref.hardware_preview_images[metadata_obj.page_num].append(segshow_crop_img)
+            hardware_image_canvas.delete("all")
+            hardware_image_canvas.create_image(0,0,image=tk_hardware_photo_array[hardware_image_array_pos],anchor=tk.NW)
+            if HARDWARE_PREVIEW_PAGE_NUM == 0:
+                return
+            is_new_skip_page = SCROLL_FRAME_REF.page_metadata[HARDWARE_PREVIEW_PAGE_NUM-1].skipTK.get()
+            if HARDWARE_PREVIEW_PAGE_SEG > -1 or is_new_skip_page:
+                if SCROLL_FRAME_REF.g_padBlackTK.get():
+                    hardware_image_canvas.create_image(50,50,image=hardware_padblack_imgtk,anchor=tk.NW)
+                else:
+                    hardware_image_canvas.create_image(50,50,image=hardware_pad_imgtk,anchor=tk.NW)
+                if is_new_skip_page:
+                    mainlabel = hardware_image_canvas.create_text(250, 170, 
+                    text=f"This page intentionally left blank.\n(Page {HARDWARE_PREVIEW_PAGE_NUM} is marked as 'Skip' and won't be included.)", 
+                    font=("Arial", 12), fill="gray50")
+                    return
+                # print("image", SCROLL_FRAME_REF.hardware_preview_images[HARDWARE_PREVIEW_PAGE_NUM][HARDWARE_PREVIEW_PAGE_SEG].size)
+                what_img = SCROLL_FRAME_REF.hardware_preview_images[HARDWARE_PREVIEW_PAGE_NUM][HARDWARE_PREVIEW_PAGE_SEG]
+                # print("what_img width", what_img.width())
+                center_adjust = (400 - what_img.width()) // 2
+                # what_img = what_img.convert('RGB')
+                # new_segment_tk = ImageTk.PhotoImage(what_img)
+                color_label_array = ["gray40","gray60","gray70","gray55","gray70"] #higher numbers are lighter
+                hardware_image_canvas.create_image(50 + center_adjust,50,image=what_img,anchor=tk.NW)
+                mainlabel = hardware_image_canvas.create_text(55, 303, 
+                text=f"Page {HARDWARE_PREVIEW_PAGE_NUM}", 
+                font=("Arial", 9), fill=color_label_array[hardware_image_array_pos], anchor=tk.W)
+                if len(SCROLL_FRAME_REF.hardware_preview_images[HARDWARE_PREVIEW_PAGE_NUM]) > 1:
+                    hardware_image_canvas.create_text(hardware_image_canvas.bbox(mainlabel)[2]+4, 303, 
+                    text=f"({HARDWARE_PREVIEW_PAGE_SEG+1}/{len(SCROLL_FRAME_REF.hardware_preview_images[HARDWARE_PREVIEW_PAGE_NUM])})", 
+                    font=("Arial", 7), fill=color_label_array[hardware_image_array_pos], anchor=tk.W)
+
+
+        def on_hardware_canvas_rightclick(event):
+            global hardware_image_array_pos 
+            hardware_image_canvas.delete("all")
+            hardware_image_array_pos += 1
+            if hardware_image_array_pos >= len(tk_hardware_photo_array):
+                hardware_image_array_pos = 0
+            hardware_image_width, hardware_image_height = hardware_image_array[hardware_image_array_pos].size
+            hardware_image_canvas.create_image(0,0,image=tk_hardware_photo_array[hardware_image_array_pos],anchor=tk.NW)
+
+        hardware_image_canvas.bind("<Button-1>", on_hardware_canvas_click)
+        hardware_image_canvas.bind("<Button-3>", on_hardware_canvas_rightclick)
+
+        options_box = tk.Text(top_control_frame, height=14, width=50, font=("Courier", 14, "normal")) 
         options_box.insert("1.0", STRING_ARGS)
         options_box.pack(side=tk.LEFT, fill=tk.X, expand=True, pady=10, padx=10)
         options_box.bind("<KeyRelease>", on_key_release)
