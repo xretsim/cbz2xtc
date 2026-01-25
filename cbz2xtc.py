@@ -1025,7 +1025,7 @@ def main():
                             dontsplit_centering_w, dontsplit_centering_h = hws_img.size
                             rollover_img.paste(hws_img, ((width-dontsplit_centering_w)//2,(height-dontsplit_centering_h)//2))
 
-                if not metadata_obj.dont_splitTK.get() and scroll_frame_ref.g_overlapTK.get():
+                if not metadata_obj.dont_splitTK.get():   # and scroll_frame_ref.g_overlapTK.get()
                     # we need to show how it will be split up. (for now not worrying about special splits or split spreads or max width (yet))
                     number_of_h_segments = 1
                     if (scroll_frame_ref.g_hsplitTargetTK.get()):
@@ -1036,6 +1036,7 @@ def main():
                     hsplit_max_width = MAX_SPLIT_WIDTH
                     if (scroll_frame_ref.g_hsplitMaxWidthTK.get()):
                         hsplit_max_width = int(scroll_frame_ref.g_hsplitMaxWidthTK.get())
+
                     if metadata_obj.split_spreadsTK.get():
                         width = width // 2
                         top = int(height * float(margin_top.get()) / 100.0)
@@ -1048,7 +1049,18 @@ def main():
                         left = int(width * float(margin_left.get()) / 100.0)
                         right = width - int(width * float(margin_right.get()) / 100.0)
                     cropped_width = right - left
-                    local_max_width = int(hsplit_max_width / 800.0 * cropped_width)
+
+                    if not scroll_frame_ref.g_overlapTK.get():
+                        # overlap is off, so we're going to do the math to force a perfect top half/bottom half split.
+                        # print("no overlap block 1")
+                        number_of_h_segments = 1
+                        half_cropped_height = (bottom - top) // 2
+                        fit_height_scale = TARGET_WIDTH * 1.0 / half_cropped_height
+                        hsplit_max_width = int(cropped_width * fit_height_scale)
+                        print("half_cropped_height:", half_cropped_height, "fit_height_scale:",fit_height_scale,"hsplit_max_width:",hsplit_max_width)
+
+                    local_max_width = int(hsplit_max_width / TARGET_HEIGHT * 1.0 * cropped_width)
+
                     # if SPECIAL_SPLITS and page_num in SPECIAL_SPLIT_PAGES:
                     #     special_split_pos = SPECIAL_SPLIT_PAGES.index(page_num)
                     #     number_of_h_segments = SPECIAL_SPLIT_HSPLITS[special_split_pos]
@@ -1084,8 +1096,15 @@ def main():
                     #     letter_keys_hsplit.reverse()
 
                     cropped_height = bottom - top
-                    overlapping_height = int(480.0/800 * cropped_width / established_scale // 1)
+                    overlapping_height = int(TARGET_WIDTH*1.0 / TARGET_HEIGHT * cropped_width / established_scale // 1)
                     # print("overlapping_height:", overlapping_height)
+
+                    if not scroll_frame_ref.g_overlapTK.get():
+                        # overlap is off, so we're going to do the math to force a perfect top half/bottom half split.
+                        # print("no overlap block 2")
+                        number_of_v_segments = 1
+                        minimum_v_overlap = -1 # we're following different rules, they don't have to overlap at all.
+
                     # print("cropped_height:", cropped_height)
                     shiftdown_to_overlap = 9999
                     while number_of_v_segments < 26 and (shiftdown_to_overlap * 1.0 / overlapping_height) > (1.0 - .01 * minimum_v_overlap):
@@ -1813,14 +1832,14 @@ def main():
 
                 self.g_outlinedTK = tk.IntVar(value=0)
                 checkbox_g5 = tk.Checkbutton(top_scroll_controls_frame3, 
-                    text="Preview Borders",
+                    text="Show Borders",
                     variable=self.g_outlinedTK,  # Link the variable to the checkbox
                     command=outlined_clicked)     # Call a function when clicked
                 checkbox_g5.pack(side=tk.LEFT, anchor="w")
 
                 self.g_shadedTK = tk.IntVar(value=1)
                 checkbox_g6 = tk.Checkbutton(top_scroll_controls_frame3, 
-                    text="Preview Overlap Regions",
+                    text="Show Overlap Regions",
                     variable=self.g_shadedTK,  # Link the variable to the checkbox
                     command=shaded_clicked)     # Call a function when clicked
                 checkbox_g6.pack(side=tk.LEFT, anchor="w")
@@ -1988,10 +2007,18 @@ def main():
         def on_closing():
             global STRING_ARGS
             STRING_ARGS = options_box.get("1.0", "end-1c")
-            print("new command after edits:", STRING_ARGS)
+            print("New command after edits:")
+            print("====================================================================================================")
+            print(STRING_ARGS)
+            print("====================================================================================================")
             root.destroy()
 
+        def on_quitting():
+            on_closing()
+            sys.exit()
+
         root.protocol("WM_DELETE_WINDOW", on_closing)
+        root.createcommand("tk::mac::Quit", on_quitting)
 
         def on_auto_click():
             """This function runs when the button is clicked."""
